@@ -3,7 +3,7 @@ TradeManageSystem (TMS) — MT5 to Supabase Cloud Sync Bridge Service
 Runs on port 8000. Synchronizes HFM MT5 account metrics, active positions,
 and 90-day trade history directly into Supabase Cloud tables:
 - tms_accounts
-- tms_active_positions
+- tms_active_positions 
 - tms_trade_journal (Preserving existing user notes and audit logs)
 """
 
