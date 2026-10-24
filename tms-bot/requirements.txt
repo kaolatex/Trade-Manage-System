@@ -1,0 +1,9 @@
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.0.0
+supabase>=2.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+# MetaTrader5 package is officially supported on Python 3.10 - 3.12 (Windows)
+# If running on Python 3.10-3.12, uncomment the line below:
+# MetaTrader5>=5.0.45
