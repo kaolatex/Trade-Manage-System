@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { LanguageProvider } from '@/context/language-context';
+import { AuthGate } from '@/components/auth/auth-gate';
 import { TradingProvider } from '@/context/trading-context';
-import { PinGate } from '@/components/pin-gate';
 import { AppShell } from '@/components/layout/app-shell';
 
 const inter = Inter({
@@ -37,11 +37,11 @@ export default function RootLayout({
     <html lang="th" className={`${inter.variable} ${jetbrainsMono.variable} dark`}>
       <body className="bg-ink font-sans text-zinc-100 antialiased">
         <LanguageProvider>
-          <TradingProvider>
-            <PinGate>
+          <AuthGate>
+            <TradingProvider>
               <AppShell>{children}</AppShell>
-            </PinGate>
-          </TradingProvider>
+            </TradingProvider>
+          </AuthGate>
         </LanguageProvider>
       </body>
     </html>

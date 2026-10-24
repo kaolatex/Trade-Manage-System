@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTrading } from '@/context/trading-context';
 import { useLanguage } from '@/context/language-context';
-import { usePinGate } from '@/components/pin-gate';
+import { useSecurity } from '@/components/auth/auth-gate';
 import { StatusDot } from '@/components/ui/badge';
 import { TmsLogo } from '@/components/ui/logo';
 import {
@@ -15,6 +15,10 @@ import {
   Cloud,
   Plus,
   Globe,
+  User,
+  KeyRound,
+  LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 import { AccountId } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -29,10 +33,11 @@ export function TopHeader() {
     setAddAccountModalOpen,
   } = useTrading();
   const { language, setLanguage, t } = useLanguage();
-  const { lock } = usePinGate();
+  const { user, lock, signOut, openChangePinModal } = useSecurity();
   const [timeStr, setTimeStr] = useState<string>('');
   const [dateStr, setDateStr] = useState<string>('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isSecurityMenuOpen, setIsSecurityMenuOpen] = useState(false);
 
   useEffect(() => {
     const updateTime = () => {
@@ -332,7 +337,7 @@ export function TopHeader() {
             </button>
           </div>
 
-          {/* Lock Button */}
+          {/* Quick Lock Button */}
           <button
             type="button"
             onClick={lock}
@@ -341,6 +346,83 @@ export function TopHeader() {
           >
             <Lock className="size-3.5" />
           </button>
+
+          {/* User Profile & Security Menu */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsSecurityMenuOpen(!isSecurityMenuOpen)}
+              title={t.security.menuTitle}
+              className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-surface px-2 py-1 text-xs text-zinc-300 transition-all hover:border-zinc-700 hover:bg-zinc-800 active:scale-95"
+            >
+              <div className="flex size-5 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400 font-mono text-[10px] font-bold">
+                {user?.email ? user.email.charAt(0).toUpperCase() : 'U'}
+              </div>
+              <ChevronDown className="size-3 text-zinc-500" />
+            </button>
+
+            {isSecurityMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setIsSecurityMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-full z-40 mt-1.5 w-60 animate-scale-in rounded-xl border border-zinc-800 bg-zinc-950/95 p-2 shadow-2xl shadow-black/80 backdrop-blur-xl">
+                  {/* User Info Header */}
+                  <div className="border-b border-zinc-800/80 px-2 py-2">
+                    <p className="truncate text-xs font-semibold text-zinc-100">
+                      {user?.email}
+                    </p>
+                    <div className="mt-1 flex items-center gap-1.5 text-[10px] text-emerald-400">
+                      <ShieldCheck className="size-3" />
+                      <span>Supabase Authenticated</span>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="space-y-1 pt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSecurityMenuOpen(false);
+                        lock();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100 transition-colors"
+                    >
+                      <Lock className="size-3.5 text-zinc-500" />
+                      <span>{t.security.lockNow}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSecurityMenuOpen(false);
+                        openChangePinModal();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100 transition-colors"
+                    >
+                      <KeyRound className="size-3.5 text-zinc-500" />
+                      <span>{t.security.changePin}</span>
+                    </button>
+
+                    <div className="my-1 h-px bg-zinc-800/80" />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSecurityMenuOpen(false);
+                        signOut();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <LogOut className="size-3.5" />
+                      <span>{t.security.signOut}</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 

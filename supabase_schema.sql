@@ -71,11 +71,60 @@ CREATE INDEX IF NOT EXISTS idx_tms_trade_journal_exec ON public.tms_trade_journa
 CREATE INDEX IF NOT EXISTS idx_tms_trade_journal_close_time ON public.tms_trade_journal(close_time DESC);
 
 -- ==============================================================================
--- Security: Disable Row Level Security (RLS) as requested
+-- Security: Row Level Security (RLS) & Granular 2-Layer Access Control
 -- ==============================================================================
-ALTER TABLE public.tms_accounts DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tms_active_positions DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tms_trade_journal DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tms_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tms_active_positions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tms_trade_journal ENABLE ROW LEVEL SECURITY;
+
+-- 1. Policies for public.tms_accounts:
+-- Read-only for authenticated web dashboard users
+DROP POLICY IF EXISTS "Allow authenticated read accounts" ON public.tms_accounts;
+CREATE POLICY "Allow authenticated read accounts" ON public.tms_accounts
+    FOR SELECT TO authenticated
+    USING (true);
+
+-- Full read/write for service_role (Python MT5 sync bridge & background daemons)
+DROP POLICY IF EXISTS "Allow service_role manage accounts" ON public.tms_accounts;
+CREATE POLICY "Allow service_role manage accounts" ON public.tms_accounts
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
+
+-- 2. Policies for public.tms_active_positions:
+-- Read-only for authenticated web dashboard users
+DROP POLICY IF EXISTS "Allow authenticated read positions" ON public.tms_active_positions;
+CREATE POLICY "Allow authenticated read positions" ON public.tms_active_positions
+    FOR SELECT TO authenticated
+    USING (true);
+
+-- Full read/write for service_role
+DROP POLICY IF EXISTS "Allow service_role manage positions" ON public.tms_active_positions;
+CREATE POLICY "Allow service_role manage positions" ON public.tms_active_positions
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
+
+-- 3. Policies for public.tms_trade_journal:
+-- Authenticated users can view historical trades
+DROP POLICY IF EXISTS "Allow authenticated read journal" ON public.tms_trade_journal;
+CREATE POLICY "Allow authenticated read journal" ON public.tms_trade_journal
+    FOR SELECT TO authenticated
+    USING (true);
+
+-- Authenticated users can update trade notes, setup tags, emotions, and audit notes
+DROP POLICY IF EXISTS "Allow authenticated update journal notes" ON public.tms_trade_journal;
+CREATE POLICY "Allow authenticated update journal notes" ON public.tms_trade_journal
+    FOR UPDATE TO authenticated
+    USING (true)
+    WITH CHECK (true);
+
+-- Full read/write for service_role
+DROP POLICY IF EXISTS "Allow service_role manage journal" ON public.tms_trade_journal;
+CREATE POLICY "Allow service_role manage journal" ON public.tms_trade_journal
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
 
 -- ==============================================================================
 -- Supabase Realtime Replication: Enable live updates across all connected devices
