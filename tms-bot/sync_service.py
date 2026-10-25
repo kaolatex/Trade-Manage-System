@@ -258,6 +258,8 @@ def export_ea_config_file(config: Dict[str, Any]) -> List[str]:
         "lookbackBars": int(strat.get("lookbackBars", 3000)),
         "useMultiEmaRibbon": bool(strat.get("useMultiEmaRibbon", True)),
         "use3000BarQuantFilter": bool(strat.get("use3000BarQuantFilter", True)),
+        "forwardHorizonBars": int(strat.get("forwardHorizonBars", 10)),
+        "minWinProbabilityPct": float(strat.get("minWinProbabilityPct", 55.0)),
         "baseLot": float(layer.get("baseLot", 0.01)),
         "riskPercent": float(layer.get("riskPercent", 1.0)),
         "maxLayers": int(layer.get("maxLayers", 5)),

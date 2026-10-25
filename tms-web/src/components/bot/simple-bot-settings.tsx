@@ -93,7 +93,8 @@ export function SimpleBotSettings({
           strategyMode: 'MODE_AGGRESSIVE_SCALPER',
           useMultiEmaRibbon: true,
           use3000BarQuantFilter: true,
-          minWinProbabilityPct: 65.0,
+          minWinProbabilityPct: 55.0,
+          forwardHorizonBars: 10,
         },
         layering: {
           ...adv.layering,
@@ -119,7 +120,7 @@ export function SimpleBotSettings({
         advancedParams: updatedAdv,
       });
     } else if (preset === 'safe') {
-      // Conservative Safe: High win rate statistical threshold (75%+) & capital safety
+      // Conservative Safe: Moderate win rate statistical threshold (60%+) & capital safety
       const updatedAdv: AdvancedEaParams = {
         ...adv,
         strategy: {
@@ -127,7 +128,8 @@ export function SimpleBotSettings({
           strategyMode: 'MODE_ADAPTIVE_QUANT',
           useMultiEmaRibbon: true,
           use3000BarQuantFilter: true,
-          minWinProbabilityPct: 75.0,
+          minWinProbabilityPct: 60.0,
+          forwardHorizonBars: 10,
           lookbackBars: 3000,
         },
         layering: {

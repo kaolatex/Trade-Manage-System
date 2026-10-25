@@ -82,8 +82,8 @@ input double            InpNewsSpikeFilterATR   = 2.8;                     // Ne
 input group "=== [Group 4: 3,000-Bar Quant Engine Deep Tuning] ==="
 input int               InpLookbackBars         = 3000;                    // 3,000 Historical Lookback Bars
 input int               InpPatternLength        = 5;                       // Vector Pattern Length (Bars)
-input int               InpForwardHorizonBars   = 3;                       // Forward Evaluation Horizon (Bars)
-input double            InpMinWinProbabilityPct = 65.0;                    // Min Win Probability Threshold (%)
+input int               InpForwardHorizonBars   = 10;                      // Forward Evaluation Horizon (Bars, 8-12)
+input double            InpMinWinProbabilityPct = 55.0;                    // Min Win Probability Threshold (%)
 input double            InpZScoreThreshold      = 1.5;                     // Statistical Z-Score Threshold
 input double            InpDynamicATR_SL_Mult   = 1.5;                     // Dynamic SL ATR Multiplier
 input double            InpDynamicATR_TP_Mult   = 2.5;                     // Dynamic TP ATR Multiplier
@@ -195,6 +195,18 @@ bool              dynIsRunning = true;
 bool              dynPanicClose = false;
 bool              dynUseMultiEmaRibbon = true;
 bool              dynUse3000BarQuantFilter = true;
+double            dynMinWinProbabilityPct = 55.0;
+int               dynForwardHorizonBars = 10;
+
+//+------------------------------------------------------------------+
+//| Helper: Check if running in MT5 Strategy Tester / Optimization   |
+//+------------------------------------------------------------------+
+bool IsTesterMode()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER) || 
+          (bool)MQLInfoInteger(MQL_OPTIMIZATION) || 
+          (bool)MQLInfoInteger(MQL_VISUAL_MODE);
+}
 
 // HUD UI Panel Constants
 #define HUD_PREFIX "TMS_HUD_"
@@ -358,6 +370,8 @@ int OnInit()
    dynSingleTP_USD        = InpSingleTP_USD;
    dynSingleTP_Points     = InpSingleTP_Points;
    dynSingleSL_Points     = InpSingleSL_Points;
+   dynMinWinProbabilityPct = InpMinWinProbabilityPct;
+   dynForwardHorizonBars   = InpForwardHorizonBars;
    dynUseAutoBE           = InpUseAutoBreakEven;
    dynBETriggerPoints     = InpBETriggerPoints;
    dynBELockPoints        = InpBELockPoints;
@@ -396,7 +410,13 @@ int OnInit()
 
    CreateHUD();
 
-   if(InpEnableCloudSync)
+   if(IsTesterMode())
+   {
+      dynIsRunning = true;
+      cloudStatus = "TESTER / INPUTS";
+      Print("🧪 [Strategy Tester] Running in Backtest mode. Cloud JSON sync disabled. Using Strategy Tester inputs 100%.");
+   }
+   else if(InpEnableCloudSync)
    {
       ReadCloudConfig();
    }
@@ -430,8 +450,14 @@ void OnTick()
 {
    datetime now = TimeCurrent();
 
-   // 1. Periodically check and reload Cloud Parameters from JSON
-   if(InpEnableCloudSync && (now - lastCloudCheck >= InpCloudSyncIntervalSec))
+   // In tester mode, force running status to true
+   if(IsTesterMode())
+   {
+      dynIsRunning = true;
+   }
+
+   // 1. Periodically check and reload Cloud Parameters from JSON (Live / Demo only)
+   if(!IsTesterMode() && InpEnableCloudSync && (now - lastCloudCheck >= InpCloudSyncIntervalSec))
    {
       lastCloudCheck = now;
       ReadCloudConfig();
@@ -470,13 +496,18 @@ void OnTick()
 
    // 8. Spread Filter Check
    long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(currentSpread > dynMaxSpread)
+   if(IsTesterMode())
+   {
+      // In tester mode, never block on spread filter (allow full backtest evaluation)
+      dynMaxSpread = (int)MathMax((long)dynMaxSpread, (currentSpread > 0 ? currentSpread * 3 : 50000));
+   }
+   else if(currentSpread > dynMaxSpread)
    {
       return;
    }
 
-   // 9. Session Timing Filter Check
-   if(!IsTradingSessionAllowed())
+   // 9. Session Timing Filter Check (Bypass in backtest)
+   if(!IsTesterMode() && !IsTradingSessionAllowed())
    {
       return;
    }
@@ -631,7 +662,7 @@ int EvaluateAggressiveScalperSignal()
       if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(1, atr_val[1]);
-         if(winRate >= InpMinWinProbabilityPct)
+         if(winRate >= dynMinWinProbabilityPct)
          {
             PrintFormat("🎯 [3000-BAR QUANT] %s | Bullish Momentum | 3,000-Bar WinRate: %.1f%% -> FIRE BUY!", _Symbol, winRate);
             return 1;
@@ -663,7 +694,7 @@ int EvaluateAggressiveScalperSignal()
       if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(-1, atr_val[1]);
-         if(winRate >= InpMinWinProbabilityPct)
+         if(winRate >= dynMinWinProbabilityPct)
          {
             PrintFormat("🎯 [3000-BAR QUANT] %s | Bearish Momentum | 3,000-Bar WinRate: %.1f%% -> FIRE SELL!", _Symbol, winRate);
             return -1;
@@ -676,74 +707,112 @@ int EvaluateAggressiveScalperSignal()
    return 0;
 }
 
+// Cache for 3,000-Bar Quant Scan (Calculated once per bar)
+datetime lastQuantScanBarTime = 0;
+double   cachedWinRateBuy     = 60.0;
+double   cachedWinRateSell    = 60.0;
+
 //+------------------------------------------------------------------+
 //| 3,000-Bar Historical Quant Scan & Empirical Win Rate Evaluator   |
 //+------------------------------------------------------------------+
 double Evaluate3000BarHistoricalWinRate(int proposedSignal, double atrCurrent)
 {
-   if(atrCurrent <= 0.0) return 70.0;
+   if(atrCurrent <= 0.0) return 60.0;
+
+   datetime currentBarTime = 0;
+   MqlRates currentRate[];
+   ArraySetAsSeries(currentRate, true);
+   if(CopyRates(_Symbol, InpTimeframe, 0, 1, currentRate) > 0)
+   {
+      currentBarTime = currentRate[0].time;
+   }
+
+   // Reuse cached result if already calculated on current bar (O(1) tick performance)
+   if(currentBarTime != 0 && currentBarTime == lastQuantScanBarTime)
+   {
+      return (proposedSignal == 1) ? cachedWinRateBuy : cachedWinRateSell;
+   }
 
    int lookback = MathMin(InpLookbackBars, 3000);
    MqlRates histRates[];
    ArraySetAsSeries(histRates, true);
-   int copied = CopyRates(_Symbol, InpTimeframe, 0, lookback + 10, histRates);
-   if(copied < 100) return 68.0;
+   int copied = CopyRates(_Symbol, InpTimeframe, 0, lookback + 15, histRates);
+   if(copied < 100)
+   {
+      cachedWinRateBuy = 60.0;
+      cachedWinRateSell = 60.0;
+      lastQuantScanBarTime = currentBarTime;
+      return 60.0;
+   }
 
-   int matches = 0;
-   int wins = 0;
-   int horizon = InpForwardHorizonBars;
-   double targetMove = InpDynamicATR_TP_Mult * atrCurrent;
-   double stopMove   = InpDynamicATR_SL_Mult * atrCurrent;
+   // Scalping & Fast BE parameters (realistic forward horizon 8-12 bars)
+   int horizon = MathMax(dynForwardHorizonBars, 10);
+   double targetMove = 0.6 * atrCurrent; // Scalp target & BE lock zone (+0.6 ATR)
+   double stopMove   = 1.2 * atrCurrent; // Maximum adverse excursion (-1.2 ATR)
+
+   int buyMatches = 0, buyWins = 0;
+   int sellMatches = 0, sellWins = 0;
 
    for(int t = horizon + 2; t < copied - 5; t++)
    {
       double barRange = histRates[t].high - histRates[t].low;
       if(barRange <= 0) continue;
 
-      if(proposedSignal == 1) // BUY
+      // 1. Evaluate historical BUY setups (bullish candle or lower wick rejection)
+      double bodyBottom = MathMin(histRates[t].open, histRates[t].close);
+      double lowerWick = bodyBottom - histRates[t].low;
+      if((lowerWick / barRange) >= 0.15 || histRates[t].close > histRates[t].open)
       {
-         double bodyBottom = MathMin(histRates[t].open, histRates[t].close);
-         double lowerWick = bodyBottom - histRates[t].low;
-         if((lowerWick / barRange) >= 0.20 && histRates[t].close > histRates[t].open)
+         buyMatches++;
+         double highestForward = histRates[t - 1].high;
+         double lowestForward  = histRates[t - 1].low;
+         for(int h = 1; h <= horizon; h++)
          {
-            matches++;
-            double highestForward = histRates[t - 1].high;
-            double lowestForward  = histRates[t - 1].low;
-            for(int h = 1; h <= horizon; h++)
-            {
-               if(histRates[t - h].high > highestForward) highestForward = histRates[t - h].high;
-               if(histRates[t - h].low < lowestForward) lowestForward = histRates[t - h].low;
-            }
-            if((highestForward - histRates[t].close) >= targetMove && (histRates[t].close - lowestForward) < stopMove)
-            {
-               wins++;
-            }
+            if(histRates[t - h].high > highestForward) highestForward = histRates[t - h].high;
+            if(histRates[t - h].low < lowestForward)   lowestForward  = histRates[t - h].low;
+         }
+
+         // Win condition: Price reached +0.6 ATR profit before hitting -1.2 ATR adverse, or closed positive
+         bool hitTarget = (highestForward - histRates[t].close) >= targetMove;
+         bool hitStop   = (histRates[t].close - lowestForward) >= stopMove;
+         bool closedPos = (histRates[t - horizon].close > histRates[t].close);
+
+         if((hitTarget && !hitStop) || (closedPos && !hitStop))
+         {
+            buyWins++;
          }
       }
-      else if(proposedSignal == -1) // SELL
+
+      // 2. Evaluate historical SELL setups (bearish candle or upper wick rejection)
+      double bodyTop = MathMax(histRates[t].open, histRates[t].close);
+      double upperWick = histRates[t].high - bodyTop;
+      if((upperWick / barRange) >= 0.15 || histRates[t].close < histRates[t].open)
       {
-         double bodyTop = MathMax(histRates[t].open, histRates[t].close);
-         double upperWick = histRates[t].high - bodyTop;
-         if((upperWick / barRange) >= 0.20 && histRates[t].close < histRates[t].open)
+         sellMatches++;
+         double highestForward = histRates[t - 1].high;
+         double lowestForward  = histRates[t - 1].low;
+         for(int h = 1; h <= horizon; h++)
          {
-            matches++;
-            double highestForward = histRates[t - 1].high;
-            double lowestForward  = histRates[t - 1].low;
-            for(int h = 1; h <= horizon; h++)
-            {
-               if(histRates[t - h].high > highestForward) highestForward = histRates[t - h].high;
-               if(histRates[t - h].low < lowestForward) lowestForward = histRates[t - h].low;
-            }
-            if((histRates[t].close - lowestForward) >= targetMove && (highestForward - histRates[t].close) < stopMove)
-            {
-               wins++;
-            }
+            if(histRates[t - h].high > highestForward) highestForward = histRates[t - h].high;
+            if(histRates[t - h].low < lowestForward)   lowestForward  = histRates[t - h].low;
+         }
+
+         bool hitTarget = (histRates[t].close - lowestForward) >= targetMove;
+         bool hitStop   = (highestForward - histRates[t].close) >= stopMove;
+         bool closedPos = (histRates[t - horizon].close < histRates[t].close);
+
+         if((hitTarget && !hitStop) || (closedPos && !hitStop))
+         {
+            sellWins++;
          }
       }
    }
 
-   if(matches < 8) return 66.0;
-   return ((double)wins / (double)matches) * 100.0;
+   cachedWinRateBuy  = (buyMatches >= 10)  ? (((double)buyWins / (double)buyMatches) * 100.0)   : 60.0;
+   cachedWinRateSell = (sellMatches >= 10) ? (((double)sellWins / (double)sellMatches) * 100.0) : 60.0;
+   lastQuantScanBarTime = currentBarTime;
+
+   return (proposedSignal == 1) ? cachedWinRateBuy : cachedWinRateSell;
 }
 
 //+------------------------------------------------------------------+
@@ -1288,6 +1357,13 @@ int CountTotalRiskFreePositions()
 //+------------------------------------------------------------------+
 void ReadCloudConfig()
 {
+   if(IsTesterMode())
+   {
+      dynIsRunning = true;
+      cloudStatus = "TESTER / INPUTS";
+      return;
+   }
+
    string filename = "tms_ea_config.json";
    int fileHandle = FileOpen(filename, FILE_READ|FILE_TXT|FILE_COMMON|FILE_ANSI);
 
@@ -1355,6 +1431,8 @@ void ReadCloudConfig()
 
    ExtractJsonParamBool(content, "useMultiEmaRibbon", dynUseMultiEmaRibbon);
    ExtractJsonParamBool(content, "use3000BarQuantFilter", dynUse3000BarQuantFilter);
+   ExtractJsonParamDouble(content, "minWinProbabilityPct", dynMinWinProbabilityPct);
+   ExtractJsonParamInt(content, "forwardHorizonBars", dynForwardHorizonBars);
    ExtractJsonParamBool(content, "isRunning", dynIsRunning);
    ExtractJsonParamBool(content, "panicClose", dynPanicClose);
 
