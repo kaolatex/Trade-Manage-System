@@ -191,6 +191,10 @@ double            dynDailyMaxLoss;
 double            dynDailyTargetProfit;
 bool              dynSmartPyramiding;
 int               dynMaxOpenPositions;
+bool              dynIsRunning = true;
+bool              dynPanicClose = false;
+bool              dynUseMultiEmaRibbon = true;
+bool              dynUse3000BarQuantFilter = true;
 
 // HUD UI Panel Constants
 #define HUD_PREFIX "TMS_HUD_"
@@ -446,8 +450,8 @@ void OnTick()
    // 5. Update On-Chart HUD Display
    UpdateHUD();
 
-   // 6. Halt new executions if circuit breaker or profit target reached
-   if(dailyCircuitBreakerActive || dailyTargetReached)
+   // 6. Halt new executions if circuit breaker, profit target reached, or paused from Web
+   if(!dynIsRunning || dailyCircuitBreakerActive || dailyTargetReached)
    {
       return;
    }
@@ -594,7 +598,7 @@ int EvaluateAggressiveScalperSignal()
    bool bullRibbon = (ema21[1] > ema50[1] && ema50[1] > ema200[1]);
    bool bearRibbon = (ema21[1] < ema50[1] && ema50[1] < ema200[1]);
 
-   if(!InpUseEMARibbon)
+   if(!InpUseEMARibbon || !dynUseMultiEmaRibbon)
    {
       bullRibbon = true;
       bearRibbon = true;
@@ -608,7 +612,7 @@ int EvaluateAggressiveScalperSignal()
 
    if(buyPullback && buyRebound && buyWick && buyOsc)
    {
-      if(InpUse3000BarQuantFilter)
+      if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(1, atr_val[1]);
          if(winRate >= InpMinWinProbabilityPct)
@@ -629,7 +633,7 @@ int EvaluateAggressiveScalperSignal()
 
    if(sellPullback && sellRebound && sellWick && sellOsc)
    {
-      if(InpUse3000BarQuantFilter)
+      if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(-1, atr_val[1]);
          if(winRate >= InpMinWinProbabilityPct)
@@ -1323,12 +1327,33 @@ void ReadCloudConfig()
       else dynStrategyMode = MODE_AGGRESSIVE_SCALPER;
    }
 
+   ExtractJsonParamBool(content, "useMultiEmaRibbon", dynUseMultiEmaRibbon);
+   ExtractJsonParamBool(content, "use3000BarQuantFilter", dynUse3000BarQuantFilter);
+   ExtractJsonParamBool(content, "isRunning", dynIsRunning);
+   ExtractJsonParamBool(content, "panicClose", dynPanicClose);
+
+   if(dynPanicClose)
+   {
+      PrintFormat("🚨 [REMOTE PANIC] Received Panic Close signal from Web UI! Closing all Magic #%d orders...", InpMagicNumber);
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         if(posInfo.SelectByIndex(i))
+         {
+            if(posInfo.Symbol() == _Symbol && posInfo.Magic() == InpMagicNumber)
+            {
+               trade.PositionClose(posInfo.Ticket());
+            }
+         }
+      }
+      dynIsRunning = false;
+   }
+
    if(InpAutoAssetScaling)
    {
       CalibrateAssetParameters(true);
    }
 
-   cloudStatus = "CLOUD SYNCED 🟢";
+   cloudStatus = dynIsRunning ? "CLOUD SYNCED 🟢" : "PAUSED (WEB) 🟡";
 }
 
 //+------------------------------------------------------------------+

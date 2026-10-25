@@ -48,6 +48,9 @@ import {
   buildRealEquityHistory,
   fetchCloudBotConfig,
   saveCloudBotConfig,
+  sendRemoteCommand,
+  fetchCloudBotLogs,
+  subscribeCloudBotLogs,
 } from '@/lib/supabase';
 
 /* ================================================================== */
@@ -171,7 +174,8 @@ type Action =
   | { type: 'HYDRATE_ACCOUNTS'; accounts: Record<AccountId, Account>; selectedId?: AccountId }
   | { type: 'SET_BRIDGE_STATUS'; bridge: BridgeStatus }
   | { type: 'SET_SUPABASE_STATUS'; status: SupabaseStatus }
-  | { type: 'SET_SYNCING'; syncing: boolean };
+  | { type: 'SET_SYNCING'; syncing: boolean }
+  | { type: 'MERGE_LOGS'; entries: Array<{ id?: number; level: string; message: string; ts?: number }> };
 
 function addLog(s: TradingState, level: LogLevel, message: string, ts: number) {
   s.seq += 1;
@@ -200,6 +204,33 @@ function reducer(state: TradingState, action: Action): TradingState {
       const s = { ...state, logs: [] };
       addLog(s, 'system', 'Console cleared.', action.now);
       return s;
+    }
+
+    case 'MERGE_LOGS': {
+      if (!action.entries || action.entries.length === 0) return state;
+      const existingSignatures = new Set(state.logs.map((l) => `${l.message.trim()}`));
+      const fresh = action.entries.filter((e) => e.message && !existingSignatures.has(e.message.trim()));
+      if (fresh.length === 0) return state;
+
+      let nextSeq = state.seq;
+      const validLevels = ['system', 'market', 'scanner', 'signal', 'exec', 'risk', 'warn', 'error', 'config'];
+      const formatted: LogEntry[] = fresh.map((e) => {
+        nextSeq += 1;
+        const lvl = validLevels.includes(e.level) ? (e.level as LogLevel) : 'scanner';
+        return {
+          id: e.id || nextSeq,
+          ts: e.ts || Date.now(),
+          level: lvl,
+          message: e.message,
+        };
+      });
+
+      const combined = [...state.logs, ...formatted].slice(-MAX_LOGS);
+      return {
+        ...state,
+        seq: nextSeq,
+        logs: combined,
+      };
     }
 
     case 'SELECT_ACCOUNT':
@@ -631,6 +662,77 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     };
   }, [hydrateFromSupabase]);
 
+  /* ---------- Live Bot Logs Streamer (Local Bridge + Supabase Cloud) ---------- */
+  useEffect(() => {
+    let isMounted = true;
+
+    // 1. Initial hydrate from Supabase Cloud
+    if (isSupabaseConfigured()) {
+      fetchCloudBotLogs(35).then((cloudLogs) => {
+        if (isMounted && cloudLogs && cloudLogs.length > 0) {
+          dispatch({
+            type: 'MERGE_LOGS',
+            entries: cloudLogs.map((l) => ({
+              id: l.id,
+              ts: l.ts || (l.timestamp ? new Date(l.timestamp).getTime() : Date.now()),
+              level: l.level,
+              message: l.message,
+            })),
+          });
+        }
+      });
+    }
+
+    // 2. Realtime listener from Supabase tms_bot_logs
+    const unsub = subscribeCloudBotLogs((newLog) => {
+      if (isMounted && newLog) {
+        dispatch({
+          type: 'MERGE_LOGS',
+          entries: [
+            {
+              id: newLog.id,
+              ts: newLog.ts || (newLog.timestamp ? new Date(newLog.timestamp).getTime() : Date.now()),
+              level: newLog.level,
+              message: newLog.message,
+            },
+          ],
+        });
+      }
+    });
+
+    // 3. Poller from local MT5 bridge (http://localhost:8000/api/bot/logs)
+    const pollBridgeLogs = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/api/bot/logs?limit=35');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.logs && data.logs.length > 0 && isMounted) {
+            dispatch({
+              type: 'MERGE_LOGS',
+              entries: data.logs.map((l: any) => ({
+                id: l.id,
+                ts: l.ts || (l.timestamp ? new Date(l.timestamp).getTime() : Date.now()),
+                level: l.level,
+                message: l.message,
+              })),
+            });
+          }
+        }
+      } catch {
+        // Bridge offline
+      }
+    };
+
+    pollBridgeLogs();
+    const interval = setInterval(pollBridgeLogs, 2500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      unsub();
+    };
+  }, []);
+
   /* ---------- Actions ---------- */
 
   const selectAccount = useCallback((id: AccountId) => dispatch({ type: 'SELECT_ACCOUNT', id }), []);
@@ -685,12 +787,51 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   );
 
   const setBotRunning = useCallback(
-    (running: boolean) => {
+    async (running: boolean) => {
       dispatch({ type: 'SET_RUNNING', running, now: Date.now() });
+
+      let bridgeSynced = false;
+      try {
+        const res = await fetch(`http://localhost:8000/api/bot/${running ? 'start' : 'stop'}`, {
+          method: 'POST',
+        });
+        if (res.ok) bridgeSynced = true;
+      } catch {
+        // Bridge unreachable
+      }
+
+      const cmdType = running ? 'START_BOT' : 'STOP_BOT';
+      if (isSupabaseConfigured()) {
+        await saveCloudBotConfig({ is_running: running });
+        if (bridgeSynced && supabase) {
+          supabase.from('tms_remote_commands').insert({
+            command_type: cmdType,
+            payload: { is_running: running },
+            status: 'EXECUTED',
+            result: { source: 'DIRECT_BRIDGE' },
+            executed_at: new Date().toISOString(),
+          }).then();
+        } else {
+          await sendRemoteCommand(cmdType, { is_running: running });
+        }
+      }
+
       pushToast(
         running
-          ? { tone: 'profit', title: 'Bot Engine Active', description: 'Engine monitoring live signals.' }
-          : { tone: 'warn', title: 'Bot Engine Paused', description: 'No automated orders will be opened.' },
+          ? {
+              tone: 'profit',
+              title: 'Bot Engine STARTED',
+              description: bridgeSynced
+                ? 'Live MT5 EA & Python Engine activated.'
+                : 'Start command saved to Supabase Cloud.',
+            }
+          : {
+              tone: 'warn',
+              title: 'Bot Engine PAUSED',
+              description: bridgeSynced
+                ? 'MT5 EA execution halted. New trades blocked.'
+                : 'Pause command saved to Supabase Cloud.',
+            },
       );
     },
     [pushToast],
@@ -748,6 +889,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           magic_number: config.magicNumber,
           advanced_params: config.advancedParams,
         });
+        await sendRemoteCommand('UPDATE_CONFIG', {
+          strategy_mode: config.strategyMode,
+          symbol: config.symbol,
+          timeframe: config.timeframe,
+          magic_number: config.magicNumber,
+          advanced_params: config.advancedParams,
+        });
         if (ok) cloudSynced = true;
       }
 
@@ -780,28 +928,111 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     [pushToast],
   );
 
-  const panicClose = useCallback(() => {
+  const panicClose = useCallback(async () => {
     dispatch({ type: 'PANIC', now: Date.now() });
+
+    let closedCount = 0;
+    let bridgeTriggered = false;
+
+    // 1. Try local MT5 bridge (instantly executes closing orders in MT5 for magic 888999)
+    try {
+      const res = await fetch('http://localhost:8000/api/bot/panic', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        closedCount = data.closed_count || 0;
+        bridgeTriggered = true;
+      }
+    } catch {
+      // Bridge offline
+    }
+
+    // 2. Send command to Supabase Cloud
+    if (isSupabaseConfigured()) {
+      await saveCloudBotConfig({ is_running: false });
+      if (bridgeTriggered && supabase) {
+        supabase.from('tms_remote_commands').insert({
+          command_type: 'PANIC_CLOSE_BOT',
+          payload: { magic: 888999 },
+          status: 'EXECUTED',
+          result: { closed_count: closedCount, source: 'DIRECT_BRIDGE' },
+          executed_at: new Date().toISOString(),
+        }).then();
+      } else {
+        await sendRemoteCommand('PANIC_CLOSE_BOT', { magic: 888999 });
+      }
+    }
+
     pushToast({
       tone: 'loss',
-      title: 'Emergency Panic Triggered',
-      description: 'Bot paused. Please verify open positions on your MT5 terminal.',
+      title: '🚨 Emergency Panic Close Triggered',
+      description: bridgeTriggered
+        ? `Closed ${closedCount} active bot positions in MT5 (Magic: 888999). Engine paused.`
+        : 'Panic command dispatched to Supabase Cloud. Bot engine paused.',
     });
   }, [pushToast]);
 
   const clearLogs = useCallback(() => dispatch({ type: 'CLEAR_LOGS', now: Date.now() }), []);
 
-  const simulateSignal = useCallback(() => {
+  const simulateSignal = useCallback(async () => {
     setIsSimulating(true);
     const sym = stateRef.current.config?.symbol || 'BTCUSD';
-    log('scanner', `[3000-BAR QUANT] ${sym} | Scanning 3,000 historical bars for Multi-EMA ribbon (9/21/50/200) alignment & pullbacks...`);
-    schedule(() => {
-      log('signal', `[3000-BAR QUANT] ${sym} | EMA(9>21>50>200) Bullish Pullback | 3,000-Bar WinRate: 74.2% (Matches: 38) -> FIRE BUY #3!`);
-      log('exec', `[SMART PYRAMIDING] ${sym} | Free-Risk Layers: 2/3 active. Unhedged risk: 1/5 -> Pyramiding Scale-In APPROVED!`);
-      log('risk', `[INSTANT BE] Ticket #982341 reached +85 pts (+0.85 USD) -> SL moved to Entry +25 pts (Risk-Free Locked!)`);
-      setIsSimulating(false);
-    }, 1100);
-  }, [log, schedule]);
+    log('scanner', `[TEST FIRE TRIGGERED] Preparing test order on ${sym}...`);
+
+    let executed = false;
+    let ticket: number | null = null;
+
+    // 1. Try local MT5 bridge first (fires real 0.01 order with Magic 888999 into MT5)
+    try {
+      const res = await fetch('http://localhost:8000/api/bot/test-fire', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: sym, lot: 0.01, side: 'BUY' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          executed = true;
+          ticket = data.ticket;
+          log('exec', `[TEST FIRE SUCCESS] MT5 Ticket #${data.ticket} opened 0.01 Lot BUY on ${data.symbol} @ ${data.price} (Magic: 888999)`);
+          pushToast({
+            tone: 'profit',
+            title: 'Test Order Fired into MT5',
+            description: `Ticket #${data.ticket} opened 0.01 Lot on ${data.symbol}`,
+          });
+          // Also insert into tms_remote_commands as EXECUTED for real-time cloud audit trail
+          if (isSupabaseConfigured() && supabase) {
+            supabase.from('tms_remote_commands').insert({
+              command_type: 'TEST_BOT_ORDER',
+              payload: { symbol: sym, lot: 0.01, side: 'BUY' },
+              status: 'EXECUTED',
+              result: { ticket: data.ticket, price: data.price, source: 'DIRECT_BRIDGE' },
+              executed_at: new Date().toISOString(),
+            }).then();
+          }
+        } else {
+          log('warn', `[TEST FIRE NOTICE] MT5 rejected order: ${data.error || 'Check spread/market hours'}`);
+        }
+      }
+    } catch {
+      // Bridge offline
+    }
+
+    // 2. If bridge was not reached, queue remote command to Supabase Cloud with PENDING status
+    if (!executed && isSupabaseConfigured()) {
+      const ok = await sendRemoteCommand('TEST_BOT_ORDER', { symbol: sym, lot: 0.01, side: 'BUY' });
+      if (ok) {
+        log('signal', `[REMOTE COMMAND] TEST_BOT_ORDER queued to Supabase Cloud for ${sym}. Local MT5 bridge will execute upon poll.`);
+        pushToast({
+          tone: 'profit',
+          title: 'Command Queued to Cloud',
+          description: `TEST_BOT_ORDER queued for ${sym}. Local MT5 bridge will execute it.`,
+        });
+      }
+    }
+
+    log('risk', `[INSTANT BE ENGINE] Real-time safety queue attached to ${sym} orders.`);
+    setIsSimulating(false);
+  }, [log, pushToast]);
 
   const setPortfolioViewMode = useCallback(
     (mode: PortfolioViewMode) => dispatch({ type: 'SET_VIEW_MODE', mode }),

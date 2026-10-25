@@ -195,12 +195,55 @@ CREATE POLICY "Allow all manage bot configs" ON public.tms_bot_configs
     USING (true)
     WITH CHECK (true);
 
+-- 5. Table: tms_remote_commands
+-- Remote Command Queue (Test Fire, Panic Close, Start, Stop)
+CREATE TABLE IF NOT EXISTS public.tms_remote_commands (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    command_type TEXT NOT NULL CHECK (command_type IN ('TEST_BOT_ORDER', 'PANIC_CLOSE_BOT', 'START_BOT', 'STOP_BOT', 'UPDATE_CONFIG')),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'EXECUTED', 'FAILED')),
+    result JSONB DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    executed_at TIMESTAMPTZ DEFAULT NULL
+);
+
+-- 6. Table: tms_bot_logs
+-- Live Quant Scanning & Execution Event Logs streamed to Web Terminal
+CREATE TABLE IF NOT EXISTS public.tms_bot_logs (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    level TEXT NOT NULL DEFAULT 'system',
+    message TEXT NOT NULL,
+    details JSONB DEFAULT NULL,
+    symbol TEXT DEFAULT 'XAUUSD'
+);
+
+-- Indexes for Commands & Logs
+CREATE INDEX IF NOT EXISTS idx_tms_remote_commands_status ON public.tms_remote_commands(status);
+CREATE INDEX IF NOT EXISTS idx_tms_remote_commands_created ON public.tms_remote_commands(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tms_bot_logs_timestamp ON public.tms_bot_logs(timestamp DESC);
+
+-- Enable RLS
+ALTER TABLE public.tms_remote_commands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tms_bot_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all manage remote commands" ON public.tms_remote_commands;
+CREATE POLICY "Allow all manage remote commands" ON public.tms_remote_commands
+    FOR ALL TO anon, authenticated, service_role
+    USING (true)
+    WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow all manage bot logs" ON public.tms_bot_logs;
+CREATE POLICY "Allow all manage bot logs" ON public.tms_bot_logs
+    FOR ALL TO anon, authenticated, service_role
+    USING (true)
+    WITH CHECK (true);
+
 -- ==============================================================================
 -- Supabase Realtime Replication: Enable live updates across all connected devices
 -- ==============================================================================
 DO $$
 BEGIN
-    -- Check if tables are already in publication before adding to avoid duplicate errors
     IF NOT EXISTS (
         SELECT 1 FROM pg_publication_tables 
         WHERE pubname = 'supabase_realtime' AND tablename = 'tms_accounts'
@@ -228,5 +271,20 @@ BEGIN
     ) THEN
         ALTER PUBLICATION supabase_realtime ADD TABLE public.tms_bot_configs;
     END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables 
+        WHERE pubname = 'supabase_realtime' AND tablename = 'tms_remote_commands'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.tms_remote_commands;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables 
+        WHERE pubname = 'supabase_realtime' AND tablename = 'tms_bot_logs'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.tms_bot_logs;
+    END IF;
 END $$;
+
 

@@ -337,3 +337,67 @@ export async function saveCloudBotConfig(payload: Partial<DbBotConfig>): Promise
   }
 }
 
+export async function sendRemoteCommand(commandType: string, payload: Record<string, any> = {}): Promise<boolean> {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase
+      .from('tms_remote_commands')
+      .insert({
+        command_type: commandType,
+        payload,
+        status: 'PENDING',
+      });
+
+    if (error) {
+      console.warn('[Supabase] sendRemoteCommand warning:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Supabase] sendRemoteCommand exception:', err);
+    return false;
+  }
+}
+
+export async function fetchCloudBotLogs(limit: number = 30): Promise<any[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('tms_bot_logs')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      return [];
+    }
+    return (data || []).reverse();
+  } catch {
+    return [];
+  }
+}
+
+export function subscribeCloudBotLogs(onNewLog: (log: any) => void): () => void {
+  if (!supabase) return () => {};
+  try {
+    const channel = supabase
+      .channel('realtime_bot_logs')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'tms_bot_logs' },
+        (payload) => {
+          if (payload.new) {
+            onNewLog(payload.new);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase?.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
+  }
+}
+

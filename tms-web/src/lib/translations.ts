@@ -287,8 +287,8 @@ export const TRANSLATIONS = {
     },
     liveTerminal: {
       title: 'คอนโซลแสดงผลการทำงานสด • REAL-TIME BOT TERMINAL',
-      simulateBtn: '⚡ จำลองสัญญาณเทรด (Simulate Signal)',
-      simulatingBtn: 'กำลังประมวลผลสัญญาณ...',
+      simulateBtn: '🧪 Test Fire 0.01 Lot',
+      simulatingBtn: 'กำลังยิงคำสั่งเข้า MT5...',
       autoScroll: 'เลื่อนจออัตโนมัติ',
       clearConsole: 'ล้างหน้าจอ',
     },
@@ -598,8 +598,8 @@ export const TRANSLATIONS = {
     },
     liveTerminal: {
       title: 'REAL-TIME BOT TERMINAL • LIVE CONSOLE LOGS',
-      simulateBtn: '⚡ Simulate Trade Signal',
-      simulatingBtn: 'Simulating Entry...',
+      simulateBtn: '🧪 Test Fire 0.01 Lot',
+      simulatingBtn: 'Firing MT5 Order...',
       autoScroll: 'Auto-Scroll',
       clearConsole: 'Clear',
     },

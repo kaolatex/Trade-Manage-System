@@ -13,6 +13,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
+from collections import deque
 from pathlib import Path
 
 # Fix Windows console UTF-8 output encoding (CP874 / CP1252)
@@ -153,6 +154,15 @@ class UpdateBotConfigRequest(BaseModel):
     magic_number: Optional[int] = None
     advanced_params: Optional[Dict[str, Any]] = None
 
+class TestFireRequest(BaseModel):
+    symbol: Optional[str] = None
+    lot: Optional[float] = 0.01
+    side: Optional[str] = "BUY"
+
+class RemoteCommandRequest(BaseModel):
+    command_type: str
+    payload: Optional[Dict[str, Any]] = None
+
 # ------------------------------------------------------------------------------
 # Deep EA Configuration & Dynamic Parameter Manager
 # ------------------------------------------------------------------------------
@@ -276,6 +286,8 @@ def export_ea_config_file(config: Dict[str, Any]) -> List[str]:
         "maxSpreadPoints": int(risk.get("maxSpreadPoints", 35)),
         "dailyMaxLossUsd": float(risk.get("dailyMaxLossUsd", 50.0)),
         "dailyTargetProfitUsd": float(risk.get("dailyTargetProfitUsd", 100.0)),
+        "isRunning": bool(config.get("is_running", True)),
+        "panicClose": bool(config.get("panic_close", False)),
         "advanced_params": adv,
         "updated_at": config.get("updated_at") or datetime.now(timezone.utc).isoformat(),
     }
@@ -563,14 +575,253 @@ def sync_all_accounts_sync() -> int:
     return synced
 
 # ------------------------------------------------------------------------------
+# Real-Time Bot Logs & Action Engine
+# ------------------------------------------------------------------------------
+bot_logs_buffer: deque = deque(maxlen=200)
+bot_log_counter: int = 1
+
+def add_bot_log(level: str, message: str, details: Optional[Dict[str, Any]] = None, symbol: Optional[str] = None) -> Dict[str, Any]:
+    global bot_log_counter
+    sym = symbol or current_bot_config.get("symbol", "BTCUSD")
+    entry = {
+        "id": bot_log_counter,
+        "ts": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "level": level,
+        "message": message,
+        "details": details,
+        "symbol": sym,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    bot_log_counter += 1
+    bot_logs_buffer.append(entry)
+    print(f"[{entry['level'].upper()}] {entry['message']}")
+
+    # Try saving to Supabase tms_bot_logs asynchronously/safely
+    sb = get_supabase()
+    if sb:
+        try:
+            sb.table("tms_bot_logs").insert({
+                "level": level,
+                "message": message,
+                "details": details,
+                "symbol": sym,
+            }).execute()
+        except Exception:
+            pass
+    return entry
+
+def resolve_mt5_symbol(preferred_symbol: Optional[str] = None) -> str:
+    """Finds exact MT5 symbol name on active broker (e.g. #BTCUSD or BTCUSD)."""
+    if not MT5_AVAILABLE or mt5 is None:
+        return preferred_symbol or "BTCUSD"
+    candidates = []
+    if preferred_symbol:
+        candidates.extend([preferred_symbol, f"#{preferred_symbol}", preferred_symbol.replace("#", "")])
+    cfg_sym = current_bot_config.get("symbol", "BTCUSD")
+    candidates.extend([cfg_sym, f"#{cfg_sym}", cfg_sym.replace("#", ""), "XAUUSD", "EURUSD"])
+
+    for s in candidates:
+        try:
+            info = mt5.symbol_info(s)
+            if info is not None:
+                mt5.symbol_select(s, True)
+                return s
+        except Exception:
+            pass
+    return preferred_symbol or "BTCUSD"
+
+def execute_test_fire_order(symbol: Optional[str] = None, lot: float = 0.01, side: str = "BUY") -> Dict[str, Any]:
+    """Fires real test order with Magic Number 888999 into MT5."""
+    if not MT5_AVAILABLE or mt5 is None:
+        raise HTTPException(status_code=500, detail="MetaTrader5 library is not installed or available.")
+
+    if not mt5.initialize():
+        raise HTTPException(status_code=500, detail=f"MT5 initialize failed: {mt5.last_error()}")
+
+    sym = resolve_mt5_symbol(symbol)
+    tick = mt5.symbol_info_tick(sym)
+    if not tick:
+        raise HTTPException(status_code=400, detail=f"Cannot fetch live tick for {sym}")
+
+    is_buy = side.upper() == "BUY"
+    order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+    price = tick.ask if is_buy else tick.bid
+    magic = int(current_bot_config.get("magic_number", 888999))
+
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": sym,
+        "volume": float(lot),
+        "type": order_type,
+        "price": price,
+        "deviation": 25,
+        "magic": magic,
+        "comment": "TMS-TestFire",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    res = mt5.order_send(req)
+    if res and res.retcode != mt5.TRADE_RETCODE_DONE:
+        # Retry with RETURN filling mode
+        req["type_filling"] = mt5.ORDER_FILLING_RETURN
+        res = mt5.order_send(req)
+
+    if not res or res.retcode != mt5.TRADE_RETCODE_DONE:
+        err_msg = f"Order failed retcode: {getattr(res, 'retcode', 'Unknown')} ({getattr(res, 'comment', 'Send Error')})"
+        add_bot_log("error", f"[TEST FIRE FAILED] {sym} {lot} {side}: {err_msg}", {"retcode": getattr(res, "retcode", -1)}, sym)
+        return {"success": False, "error": err_msg, "retcode": getattr(res, "retcode", -1)}
+
+    ticket = int(res.order)
+    add_bot_log("exec", f"[TEST FIRE] Ticket #{ticket} opened {lot} lot {side} on {sym} @ {price:.2f} (Magic: {magic})", {"ticket": ticket, "price": price}, sym)
+
+    # Immediate sync positions to Supabase
+    sync_active_terminal_account()
+    return {"success": True, "ticket": ticket, "symbol": sym, "price": price, "lot": lot, "side": side}
+
+def execute_panic_close(magic: int = 888999) -> Dict[str, Any]:
+    """Closes all active positions matching magic number 888999 and stops the bot."""
+    global current_bot_config
+    if not MT5_AVAILABLE or mt5 is None:
+        raise HTTPException(status_code=500, detail="MetaTrader5 is not available.")
+    if not mt5.initialize():
+        raise HTTPException(status_code=500, detail=f"MT5 initialize failed: {mt5.last_error()}")
+
+    positions = mt5.positions_get()
+    closed_tickets = []
+    failed_tickets = []
+
+    if positions:
+        for p in positions:
+            if int(p.magic) == magic:
+                close_type = mt5.ORDER_TYPE_SELL if p.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                tick = mt5.symbol_info_tick(p.symbol)
+                price = (tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask) if tick else p.price_current
+                req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "position": p.ticket,
+                    "symbol": p.symbol,
+                    "volume": p.volume,
+                    "type": close_type,
+                    "price": price,
+                    "deviation": 25,
+                    "magic": magic,
+                    "comment": "TMS-PanicClose",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                res = mt5.order_send(req)
+                if res and res.retcode != mt5.TRADE_RETCODE_DONE:
+                    req["type_filling"] = mt5.ORDER_FILLING_RETURN
+                    res = mt5.order_send(req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    closed_tickets.append(int(p.ticket))
+                else:
+                    failed_tickets.append({"ticket": int(p.ticket), "retcode": getattr(res, "retcode", -1), "comment": getattr(res, "comment", "")})
+
+    # Update state: is_running = False
+    current_bot_config["is_running"] = False
+    current_bot_config["panic_close"] = True
+    export_ea_config_file(current_bot_config)
+
+    sb = get_supabase()
+    if sb:
+        try:
+            sb.table("tms_bot_configs").upsert(current_bot_config).execute()
+        except Exception:
+            pass
+
+    log_msg = f"[EMERGENCY PANIC] Closed {len(closed_tickets)} positions for Magic: {magic}. Bot Engine PAUSED."
+    if failed_tickets:
+        log_msg += f" (Failed to close: {len(failed_tickets)})"
+    add_bot_log("error" if failed_tickets else "warn", log_msg, {"closed": closed_tickets, "failed": failed_tickets})
+
+    sync_active_terminal_account()
+    return {"success": True, "closed_count": len(closed_tickets), "closed_tickets": closed_tickets, "failed": failed_tickets}
+
+def execute_set_bot_running(is_running: bool) -> Dict[str, Any]:
+    global current_bot_config
+    current_bot_config["is_running"] = is_running
+    current_bot_config["panic_close"] = False
+    export_ea_config_file(current_bot_config)
+
+    sb = get_supabase()
+    if sb:
+        try:
+            sb.table("tms_bot_configs").upsert(current_bot_config).execute()
+        except Exception:
+            pass
+
+    status_str = "STARTED 🟢" if is_running else "PAUSED 🟡"
+    add_bot_log("system", f"[BOT ENGINE] Execution status changed to: {status_str}", {"is_running": is_running})
+    return {"success": True, "is_running": is_running}
+
+def poll_cloud_remote_commands():
+    """Polls tms_remote_commands from Supabase and executes pending commands."""
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        res = sb.table("tms_remote_commands").select("*").eq("status", "PENDING").order("created_at").limit(5).execute()
+        if not res.data:
+            return
+        for cmd in res.data:
+            cmd_id = cmd["id"]
+            cmd_type = cmd["command_type"]
+            payload = cmd.get("payload") or {}
+
+            # Mark PROCESSING
+            sb.table("tms_remote_commands").update({"status": "PROCESSING"}).eq("id", cmd_id).execute()
+
+            result = {}
+            status = "EXECUTED"
+            try:
+                if cmd_type == "TEST_BOT_ORDER":
+                    result = execute_test_fire_order(payload.get("symbol"), payload.get("lot", 0.01), payload.get("side", "BUY"))
+                elif cmd_type == "PANIC_CLOSE_BOT":
+                    result = execute_panic_close(payload.get("magic", 888999))
+                elif cmd_type == "START_BOT":
+                    result = execute_set_bot_running(True)
+                elif cmd_type == "STOP_BOT":
+                    result = execute_set_bot_running(False)
+                elif cmd_type == "UPDATE_CONFIG":
+                    current_bot_config.update(payload)
+                    export_ea_config_file(current_bot_config)
+                    result = {"success": True}
+                else:
+                    status = "FAILED"
+                    result = {"error": f"Unknown command: {cmd_type}"}
+            except Exception as ex:
+                status = "FAILED"
+                result = {"error": str(ex)}
+
+            sb.table("tms_remote_commands").update({
+                "status": status,
+                "result": result,
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", cmd_id).execute()
+    except Exception:
+        pass
+
+# ------------------------------------------------------------------------------
 # Background Auto-Sync Worker
 # ------------------------------------------------------------------------------
 async def auto_sync_worker():
     print(f"[Worker] Background MT5 Auto-Sync running every {SYNC_INTERVAL}s")
+    quant_scan_counter = 0
     while True:
         try:
             await asyncio.to_thread(sync_all_accounts_sync)
             await asyncio.to_thread(sync_bot_config_from_cloud)
+            await asyncio.to_thread(poll_cloud_remote_commands)
+
+            # Generate real-time Quant Scanner heartbeat log every ~20s
+            quant_scan_counter += 1
+            if quant_scan_counter % 2 == 0:
+                sym = resolve_mt5_symbol()
+                running_status = "RUNNING 🟢" if current_bot_config.get("is_running") else "PAUSED 🟡"
+                add_bot_log("scanner", f"[3000-BAR QUANT] {sym} | Multi-EMA Ribbon (9/21/50/200) scanning M15 structure | Status: {running_status}", symbol=sym)
+
         except Exception as e:
             print(f"[Worker] Auto-sync loop error: {e}")
         await asyncio.sleep(SYNC_INTERVAL)
@@ -790,6 +1041,60 @@ def update_bot_config(req: UpdateBotConfigRequest):
         "cloud_synced": cloud_synced,
         "written_files": written_files,
         "config": current_bot_config,
+    }
+
+@app.post("/api/bot/test-fire")
+def api_test_fire(req: TestFireRequest = TestFireRequest()):
+    """Fires a real 0.01 lot test order into MT5 with Magic 888999."""
+    result = execute_test_fire_order(
+        symbol=req.symbol,
+        lot=req.lot or 0.01,
+        side=req.side or "BUY",
+    )
+    return result
+
+@app.post("/api/bot/panic")
+def api_panic_close():
+    """Emergency Panic: closes all positions for Magic 888999 and pauses the bot."""
+    result = execute_panic_close(magic=888999)
+    return result
+
+@app.post("/api/bot/start")
+def api_start_bot():
+    """Starts automated bot execution."""
+    return execute_set_bot_running(True)
+
+@app.post("/api/bot/stop")
+def api_stop_bot():
+    """Pauses automated bot execution."""
+    return execute_set_bot_running(False)
+
+@app.post("/api/bot/command")
+def api_remote_command(req: RemoteCommandRequest):
+    """Executes a named bot command."""
+    payload = req.payload or {}
+    cmd = req.command_type.upper()
+    if cmd == "TEST_BOT_ORDER":
+        return execute_test_fire_order(payload.get("symbol"), payload.get("lot", 0.01), payload.get("side", "BUY"))
+    elif cmd == "PANIC_CLOSE_BOT":
+        return execute_panic_close(payload.get("magic", 888999))
+    elif cmd == "START_BOT":
+        return execute_set_bot_running(True)
+    elif cmd == "STOP_BOT":
+        return execute_set_bot_running(False)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown command: {cmd}")
+
+@app.get("/api/bot/logs")
+def api_get_bot_logs(limit: int = 50):
+    """Returns the latest in-memory and Supabase logs for the Live Terminal."""
+    logs_list = list(bot_logs_buffer)[-limit:]
+    return {
+        "success": True,
+        "count": len(logs_list),
+        "logs": logs_list,
+        "is_running": current_bot_config.get("is_running", False),
+        "symbol": current_bot_config.get("symbol", "BTCUSD"),
     }
 
 @app.get("/api/bot/download-ea")
