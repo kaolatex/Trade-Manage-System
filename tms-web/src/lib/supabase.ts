@@ -282,3 +282,58 @@ export async function updateCloudJournalNote(
     return false;
   }
 }
+
+export interface DbBotConfig {
+  id: string;
+  is_running: boolean;
+  bot_mode: string;
+  strategy_mode: string;
+  symbol: string;
+  timeframe: string;
+  magic_number: number;
+  advanced_params: any;
+  updated_at: string;
+}
+
+export async function fetchCloudBotConfig(): Promise<DbBotConfig | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('tms_bot_configs')
+      .select('*')
+      .eq('id', 'default')
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[Supabase] Could not fetch bot config:', error.message);
+      return null;
+    }
+    return data as DbBotConfig;
+  } catch (err) {
+    console.warn('[Supabase] fetchCloudBotConfig exception:', err);
+    return null;
+  }
+}
+
+export async function saveCloudBotConfig(payload: Partial<DbBotConfig>): Promise<boolean> {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase
+      .from('tms_bot_configs')
+      .upsert({
+        id: 'default',
+        ...payload,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error('[Supabase] Error saving bot config:', error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[Supabase] saveCloudBotConfig exception:', err);
+    return false;
+  }
+}
+

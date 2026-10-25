@@ -9,7 +9,7 @@ import type {
   SymbolCode,
   Timeframe,
 } from './types';
-import { SYMBOLS, fmtPrice } from './market';
+import { SYMBOLS, fmtPrice, getSymbolSpec } from './market';
 import { clamp, pad2, round2 } from './utils';
 
 export const TIMEFRAMES: Timeframe[] = ['M1', 'M5', 'M15', 'H1'];
@@ -83,7 +83,7 @@ export const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.leng
 
 export function calcLot(cfg: BotConfig, balance: number) {
   if (cfg.lotMode === 'fixed') return Math.max(0.01, round2(cfg.fixedLot));
-  const spec = SYMBOLS[cfg.symbol];
+  const spec = getSymbolSpec(cfg.symbol);
   const riskUsd = (balance * cfg.riskPercent) / 100;
   const perLot = cfg.slPoints * spec.point * spec.contract;
   if (perLot <= 0) return 0.01;
@@ -119,8 +119,8 @@ interface EngineSnapshot {
 
 export function generateAutoLog(s: EngineSnapshot): { level: LogLevel; message: string } {
   const cfg = s.config;
-  const spec = SYMBOLS[cfg.symbol];
-  const price = s.prices[cfg.symbol];
+  const spec = getSymbolSpec(cfg.symbol);
+  const price = s.prices[cfg.symbol] || spec.base;
   const acc = s.accounts[botAccountId(s.botMode)];
   const r = Math.random();
 

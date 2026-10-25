@@ -14,32 +14,81 @@ export interface SymbolSpec {
 }
 
 export const SYMBOLS: Record<SymbolCode, SymbolSpec> = {
+  '#BTCUSD': { digits: 2, point: 0.01, contract: 1, base: 67800.0, vol: 20.0 },
+  BTCUSD: { digits: 2, point: 0.01, contract: 1, base: 67800.0, vol: 20.0 },
   XAUUSD: { digits: 2, point: 0.01, contract: 100, base: 2652.35, vol: 0.35 },
   EURUSD: { digits: 5, point: 0.00001, contract: 100_000, base: 1.0842, vol: 0.00008 },
   GBPUSD: { digits: 5, point: 0.00001, contract: 100_000, base: 1.2965, vol: 0.0001 },
 };
 
-export const SYMBOL_LIST = Object.keys(SYMBOLS) as SymbolCode[];
+export const SYMBOL_LIST: SymbolCode[] = ['XAUUSD', 'BTCUSD', 'EURUSD', 'GBPUSD'];
 
 export const INITIAL_PRICES: Record<SymbolCode, number> = {
+  '#BTCUSD': 67800.0,
+  BTCUSD: 67800.0,
   XAUUSD: 2652.35,
   EURUSD: 1.0842,
   GBPUSD: 1.2965,
 };
+
+/**
+ * Universal Symbol Spec Resolver:
+ * Cleans broker-specific prefixes/suffixes (e.g. #BTCUSD, BTCUSD.m, XAUUSD.h)
+ * and guarantees a valid SymbolSpec even for unlisted broker instruments.
+ */
+export function getSymbolSpec(rawSymbol?: string | null): SymbolSpec {
+  if (!rawSymbol) {
+    return { digits: 2, point: 0.01, contract: 100, base: 2650.0, vol: 0.35 };
+  }
+
+  // 1. Direct exact lookup
+  if (rawSymbol in SYMBOLS) {
+    return SYMBOLS[rawSymbol as SymbolCode];
+  }
+
+  // 2. Normalized lookup (strip leading # and trailing broker suffixes)
+  const clean = rawSymbol.toUpperCase().replace(/^#/, '').split('.')[0].trim();
+  if (clean in SYMBOLS) {
+    return SYMBOLS[clean as SymbolCode];
+  }
+
+  // 3. Heuristic matching based on asset class
+  if (clean.includes('BTC') || clean.includes('ETH') || clean.includes('CRYPTO')) {
+    return { digits: 2, point: 0.01, contract: 1, base: 67800.0, vol: 20.0 };
+  }
+  if (clean.includes('XAU') || clean.includes('GOLD')) {
+    return { digits: 2, point: 0.01, contract: 100, base: 2650.0, vol: 0.35 };
+  }
+  if (clean.includes('JPY')) {
+    return { digits: 3, point: 0.001, contract: 100_000, base: 150.0, vol: 0.1 };
+  }
+  if (clean.length === 6 && (clean.includes('USD') || clean.includes('EUR') || clean.includes('GBP'))) {
+    return { digits: 5, point: 0.00001, contract: 100_000, base: 1.1000, vol: 0.0001 };
+  }
+
+  // 4. Default safe fallback
+  return { digits: 2, point: 0.01, contract: 100, base: 100.0, vol: 0.5 };
+}
 
 export function roundTo(n: number, digits: number) {
   const f = 10 ** digits;
   return Math.round(n * f) / f;
 }
 
-export function fmtPrice(n: number, symbol: SymbolCode) {
-  return n.toFixed(SYMBOLS[symbol].digits);
+export function fmtPrice(n: number | null | undefined, symbol?: string | null): string {
+  if (n === null || n === undefined || typeof n !== 'number' || isNaN(n)) {
+    return '0.00';
+  }
+  const spec = getSymbolSpec(symbol);
+  return n.toFixed(spec.digits);
 }
 
 /** P&L in USD (all supported symbols are USD-quoted). */
-export function calcPnl(p: Pick<Position, 'symbol' | 'type' | 'lot' | 'entry'>, price: number) {
+export function calcPnl(p: Pick<Position, 'symbol' | 'type' | 'lot' | 'entry'>, price: number): number {
+  if (!p || typeof price !== 'number' || isNaN(price)) return 0;
   const dir = p.type === 'BUY' ? 1 : -1;
-  return (price - p.entry) * dir * p.lot * SYMBOLS[p.symbol].contract;
+  const spec = getSymbolSpec(p.symbol);
+  return (price - p.entry) * dir * p.lot * spec.contract;
 }
 
 export interface AccountMetrics {
@@ -56,7 +105,7 @@ export function getAccountMetrics(
   prices?: Record<SymbolCode, number>,
   executionFilter?: 'MANUAL' | 'BOT',
 ): AccountMetrics {
-  const safePrices = prices || INITIAL_PRICES;
+  const safePrices: Record<string, number> = prices || INITIAL_PRICES;
   const balance = Number(acc?.balance || 0);
   const leverage = Number(acc?.leverage || 500);
   const activePositions = executionFilter
@@ -66,11 +115,10 @@ export function getAccountMetrics(
   let floating = 0;
   let margin = 0;
   for (const p of activePositions) {
-    const spec = SYMBOLS[p.symbol];
-    if (spec) {
-      floating += calcPnl(p, safePrices[p.symbol] || p.entry);
-      margin += (p.lot * spec.contract * p.entry) / leverage;
-    }
+    const spec = getSymbolSpec(p.symbol);
+    const curPrice = safePrices[p.symbol] ?? safePrices[p.symbol.replace(/^#/, '')] ?? p.entry;
+    floating += calcPnl(p, curPrice);
+    margin += (p.lot * spec.contract * p.entry) / (leverage > 0 ? leverage : 500);
   }
   const equity = balance + floating;
   return {

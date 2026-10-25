@@ -131,6 +131,72 @@ export function EnvironmentBanner() {
             </button>
           </div>
         </div>
+
+        {/* 4-Point Bot Readiness Diagnostic Bar */}
+        <div className="mt-4 grid grid-cols-2 gap-2 border-t border-zinc-800/80 pt-3 sm:grid-cols-4">
+          <div className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-950/60 px-3 py-2">
+            <span
+              className={cn(
+                'size-2.5 rounded-full shrink-0',
+                state.botRunning ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400',
+              )}
+            />
+            <div className="min-w-0">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                1. Engine Readiness
+              </span>
+              <span
+                className={cn(
+                  'block text-xs font-bold truncate',
+                  state.botRunning ? 'text-emerald-400' : 'text-amber-400',
+                )}
+              >
+                {state.botRunning ? 'READY TO TRADE 🟢' : 'PAUSED (STANDBY) ⏸️'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-950/60 px-3 py-2">
+            <span className="size-2.5 rounded-full bg-emerald-400 shrink-0" />
+            <div className="min-w-0">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                2. Broker Bridge
+              </span>
+              <span className="block text-xs font-bold text-zinc-200 truncate">
+                {attachedAccount ? `${attachedAccount.server} #${attachedAccount.login}` : 'Simulated HFM Demo'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-950/60 px-3 py-2">
+            <span
+              className={cn(
+                'size-2.5 rounded-full shrink-0',
+                state.isSyncing ? 'bg-amber-400 animate-spin' : 'bg-cyan-400',
+              )}
+            />
+            <div className="min-w-0">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                3. MT5 EA Sync
+              </span>
+              <span className="block text-xs font-bold text-cyan-300 truncate">
+                {state.isSyncing ? 'Syncing...' : 'tms_ea_config.json 🟢'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-950/60 px-3 py-2">
+            <span className="size-2.5 rounded-full bg-emerald-400 shrink-0" />
+            <div className="min-w-0">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                4. Asset & Frame
+              </span>
+              <span className="block text-xs font-bold text-amber-300 truncate">
+                {state.config.symbol || 'BTCUSD'} @ {state.config.timeframe || 'M15'}
+              </span>
+            </div>
+          </div>
+        </div>
       </Card>
 
       <PanicModal

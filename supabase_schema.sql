@@ -60,6 +60,88 @@ CREATE TABLE IF NOT EXISTS public.tms_trade_journal (
     audit_note TEXT DEFAULT NULL
 );
 
+-- 4. Table: tms_bot_configs
+-- Stores Cloud Deep Customization parameters for Native MQL5 EA & Python Bridge
+CREATE TABLE IF NOT EXISTS public.tms_bot_configs (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    is_running BOOLEAN NOT NULL DEFAULT false,
+    bot_mode TEXT NOT NULL DEFAULT 'live',
+    strategy_mode TEXT NOT NULL DEFAULT 'MODE_AGGRESSIVE_SCALPER',
+    symbol TEXT NOT NULL DEFAULT 'XAUUSD',
+    timeframe TEXT NOT NULL DEFAULT 'M15',
+    magic_number BIGINT NOT NULL DEFAULT 888999,
+    advanced_params JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed default configuration row if empty
+INSERT INTO public.tms_bot_configs (id, is_running, bot_mode, strategy_mode, symbol, timeframe, magic_number, advanced_params)
+VALUES (
+    'default',
+    false,
+    'live',
+    'MODE_AGGRESSIVE_SCALPER',
+    'XAUUSD',
+    'M15',
+    888999,
+    '{
+        "strategy": {
+            "strategyMode": "MODE_AGGRESSIVE_SCALPER",
+            "timeframe": "M15",
+            "magicNumber": 888999,
+            "orderComment": "TMS-Quantum-EA",
+            "emaTrendPeriod": 50,
+            "bbPeriod": 20,
+            "bbDeviation": 1.8,
+            "stochRsiK": 14,
+            "stochRsiOversold": 22.0,
+            "stochRsiOverbought": 78.0,
+            "minRejectionWickPct": 25.0,
+            "newsSpikeFilterAtr": 2.8,
+            "lookbackBars": 2000,
+            "patternLength": 5,
+            "forwardHorizonBars": 3,
+            "minWinProbabilityPct": 65.0,
+            "zScoreThreshold": 1.5,
+            "dynamicAtrSlMult": 1.5,
+            "dynamicAtrTpMult": 2.5
+        },
+        "layering": {
+            "lotMode": "fixed",
+            "baseLot": 0.01,
+            "riskPercent": 1.0,
+            "maxLayers": 5,
+            "lotMultiplier": 1.0,
+            "minStepPoints": 80,
+            "useDynamicAtrStep": true,
+            "atrStepMult": 0.7,
+            "layerCooldownSec": 15
+        },
+        "basket": {
+            "singleTpUsd": 1.0,
+            "singleTpPoints": 150,
+            "singleSlPoints": 400,
+            "useBasketClose": true,
+            "basketTargetUsd": 1.5,
+            "useAutoBreakEven": true,
+            "beTriggerPoints": 120,
+            "beLockPoints": 20,
+            "useTrailingStop": true,
+            "trailStartPoints": 150,
+            "trailStepPoints": 30
+        },
+        "risk": {
+            "maxSpreadPoints": 35,
+            "dailyMaxLossUsd": 50.0,
+            "dailyTargetProfitUsd": 100.0,
+            "tradeAsianSession": true,
+            "tradeLondonSession": true,
+            "tradeNySession": true
+        }
+    }'::jsonb
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- ==============================================================================
 -- Indexes for High Performance Queries & Instant Filtering
 -- ==============================================================================
@@ -76,6 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_tms_trade_journal_close_time ON public.tms_trade_
 ALTER TABLE public.tms_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tms_active_positions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tms_trade_journal ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tms_bot_configs ENABLE ROW LEVEL SECURITY;
 
 -- 1. Policies for public.tms_accounts:
 DROP POLICY IF EXISTS "Allow authenticated read accounts" ON public.tms_accounts;
@@ -101,6 +184,13 @@ DROP POLICY IF EXISTS "Allow authenticated update journal notes" ON public.tms_t
 DROP POLICY IF EXISTS "Allow service_role manage journal" ON public.tms_trade_journal;
 DROP POLICY IF EXISTS "Allow all manage journal" ON public.tms_trade_journal;
 CREATE POLICY "Allow all manage journal" ON public.tms_trade_journal
+    FOR ALL TO anon, authenticated, service_role
+    USING (true)
+    WITH CHECK (true);
+
+-- 4. Policies for public.tms_bot_configs:
+DROP POLICY IF EXISTS "Allow all manage bot configs" ON public.tms_bot_configs;
+CREATE POLICY "Allow all manage bot configs" ON public.tms_bot_configs
     FOR ALL TO anon, authenticated, service_role
     USING (true)
     WITH CHECK (true);
@@ -131,4 +221,12 @@ BEGIN
     ) THEN
         ALTER PUBLICATION supabase_realtime ADD TABLE public.tms_trade_journal;
     END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables 
+        WHERE pubname = 'supabase_realtime' AND tablename = 'tms_bot_configs'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.tms_bot_configs;
+    END IF;
 END $$;
+

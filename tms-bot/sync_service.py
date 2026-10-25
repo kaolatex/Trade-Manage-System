@@ -25,8 +25,13 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+# TMS Deep Strategy Engine & Order Executor
+from strategy_engine import StrategyEngine
+from order_executor import OrderExecutor
 
 # MetaTrader 5 Native Library
 try:
@@ -138,6 +143,206 @@ class SyncResponse(BaseModel):
     message: str
     synced_accounts: int
     timestamp: str
+
+class UpdateBotConfigRequest(BaseModel):
+    is_running: Optional[bool] = None
+    bot_mode: Optional[str] = None
+    strategy_mode: Optional[str] = None
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    magic_number: Optional[int] = None
+    advanced_params: Optional[Dict[str, Any]] = None
+
+# ------------------------------------------------------------------------------
+# Deep EA Configuration & Dynamic Parameter Manager
+# ------------------------------------------------------------------------------
+DEFAULT_BOT_CONFIG: Dict[str, Any] = {
+    "id": "default",
+    "is_running": False,
+    "bot_mode": "live",
+    "strategy_mode": "MODE_AGGRESSIVE_SCALPER",
+    "symbol": "XAUUSD",
+    "timeframe": "M15",
+    "magic_number": 888999,
+    "advanced_params": {
+        "strategy": {
+            "strategyMode": "MODE_AGGRESSIVE_SCALPER",
+            "timeframe": "M15",
+            "magicNumber": 888999,
+            "orderComment": "TMS-Quantum-EA",
+            "emaTrendPeriod": 50,
+            "bbPeriod": 20,
+            "bbDeviation": 1.8,
+            "stochRsiK": 14,
+            "stochRsiOversold": 22.0,
+            "stochRsiOverbought": 78.0,
+            "minRejectionWickPct": 25.0,
+            "newsSpikeFilterAtr": 2.8,
+            "lookbackBars": 2000,
+            "patternLength": 5,
+            "forwardHorizonBars": 3,
+            "minWinProbabilityPct": 65.0,
+            "zScoreThreshold": 1.5,
+            "dynamicAtrSlMult": 1.5,
+            "dynamicAtrTpMult": 2.5,
+        },
+        "layering": {
+            "lotMode": "fixed",
+            "baseLot": 0.01,
+            "riskPercent": 1.0,
+            "maxLayers": 5,
+            "lotMultiplier": 1.0,
+            "minStepPoints": 80,
+            "useDynamicAtrStep": True,
+            "atrStepMult": 0.7,
+            "layerCooldownSec": 15,
+        },
+        "basket": {
+            "singleTpUsd": 1.0,
+            "singleTpPoints": 150,
+            "singleSlPoints": 400,
+            "useBasketClose": True,
+            "basketTargetUsd": 1.5,
+            "useAutoBreakEven": True,
+            "beTriggerPoints": 120,
+            "beLockPoints": 20,
+            "useTrailingStop": True,
+            "trailStartPoints": 150,
+            "trailStepPoints": 30,
+        },
+        "risk": {
+            "maxSpreadPoints": 35,
+            "dailyMaxLossUsd": 50.0,
+            "dailyTargetProfitUsd": 100.0,
+            "tradeAsianSession": True,
+            "tradeLondonSession": True,
+            "tradeNySession": True,
+        },
+    },
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+
+current_bot_config: Dict[str, Any] = json.loads(json.dumps(DEFAULT_BOT_CONFIG))
+strategy_engine = StrategyEngine(current_bot_config)
+order_executor = OrderExecutor(current_bot_config)
+
+def export_ea_config_file(config: Dict[str, Any]) -> List[str]:
+    """
+    Exports flattened JSON parameters to:
+    1. MetaQuotes Common Files (%APPDATA%/MetaQuotes/Terminal/Common/Files/tms_ea_config.json)
+    2. Active MT5 Terminal MQL5/Files
+    3. Local tms-bot/mql5/Files/tms_ea_config.json
+    This allows TMS_Quantum_EA.mq5 running in MT5 chart to pick up changes dynamically!
+    """
+    adv = config.get("advanced_params", {})
+    strat = adv.get("strategy", {})
+    layer = adv.get("layering", {})
+    basket = adv.get("basket", {})
+    risk = adv.get("risk", {})
+
+    ea_flat_dict = {
+        "strategyMode": strat.get("strategyMode", config.get("strategy_mode", "MODE_AGGRESSIVE_SCALPER")),
+        "timeframe": strat.get("timeframe", config.get("timeframe", "M15")),
+        "magicNumber": int(strat.get("magicNumber", config.get("magic_number", 888999))),
+        "orderComment": strat.get("orderComment", "TMS-Quantum-EA"),
+        "lookbackBars": int(strat.get("lookbackBars", 3000)),
+        "useMultiEmaRibbon": bool(strat.get("useMultiEmaRibbon", True)),
+        "use3000BarQuantFilter": bool(strat.get("use3000BarQuantFilter", True)),
+        "baseLot": float(layer.get("baseLot", 0.01)),
+        "riskPercent": float(layer.get("riskPercent", 1.0)),
+        "maxLayers": int(layer.get("maxLayers", 5)),
+        "useSmartPyramiding": bool(layer.get("useSmartPyramiding", True)),
+        "maxOpenPositions": int(layer.get("maxOpenPositions", 10)),
+        "lotMultiplier": float(layer.get("lotMultiplier", 1.0)),
+        "minStepPoints": int(layer.get("minStepPoints", 80)),
+        "useDynamicAtrStep": bool(layer.get("useDynamicAtrStep", True)),
+        "atrStepMult": float(layer.get("atrStepMult", 0.7)),
+        "layerCooldownSec": int(layer.get("layerCooldownSec", 15)),
+        "singleTpUsd": float(basket.get("singleTpUsd", 1.0)),
+        "singleTpPoints": int(basket.get("singleTpPoints", 150)),
+        "singleSlPoints": int(basket.get("singleSlPoints", 400)),
+        "useBasketClose": bool(basket.get("useBasketClose", True)),
+        "basketTargetUsd": float(basket.get("basketTargetUsd", 1.5)),
+        "useAutoBreakEven": bool(basket.get("useAutoBreakEven", True)),
+        "beTriggerPoints": int(basket.get("beTriggerPoints", 120)),
+        "beLockPoints": int(basket.get("beLockPoints", 20)),
+        "useInstantSmartBE": bool(basket.get("useInstantSmartBE", True)),
+        "instantBeTriggerPoints": int(basket.get("instantBeTriggerPoints", 80)),
+        "instantBeLockPoints": int(basket.get("instantBeLockPoints", 20)),
+        "instantBeMinUsd": float(basket.get("instantBeMinUsd", 0.30)),
+        "useTrailingStop": bool(basket.get("useTrailingStop", True)),
+        "trailStartPoints": int(basket.get("trailStartPoints", 150)),
+        "trailStepPoints": int(basket.get("trailStepPoints", 30)),
+        "maxSpreadPoints": int(risk.get("maxSpreadPoints", 35)),
+        "dailyMaxLossUsd": float(risk.get("dailyMaxLossUsd", 50.0)),
+        "dailyTargetProfitUsd": float(risk.get("dailyTargetProfitUsd", 100.0)),
+        "advanced_params": adv,
+        "updated_at": config.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+    }
+
+    written_paths: List[str] = []
+    json_text = json.dumps(ea_flat_dict, indent=2, ensure_ascii=False)
+
+    # 1. MT5 Common Files
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        common_path = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+        try:
+            common_path.mkdir(parents=True, exist_ok=True)
+            target = common_path / "tms_ea_config.json"
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(json_text)
+            written_paths.append(str(target))
+        except Exception as e:
+            print(f"⚠️ Could not write to Common Files: {e}")
+
+    # 2. Running MT5 Terminal MQL5/Files
+    if MT5_AVAILABLE and mt5 is not None:
+        try:
+            tinfo = mt5.terminal_info()
+            if tinfo and tinfo.data_path:
+                t_files = Path(tinfo.data_path) / "MQL5" / "Files"
+                t_files.mkdir(parents=True, exist_ok=True)
+                target = t_files / "tms_ea_config.json"
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(json_text)
+                written_paths.append(str(target))
+        except Exception as e:
+            print(f"⚠️ Could not write to terminal MQL5/Files: {e}")
+
+    # 3. Local workspace fallback
+    local_files = Path(__file__).resolve().parent / "mql5" / "Files"
+    try:
+        local_files.mkdir(parents=True, exist_ok=True)
+        target = local_files / "tms_ea_config.json"
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(json_text)
+        written_paths.append(str(target))
+    except Exception as e:
+        print(f"⚠️ Could not write to local MQL5/Files: {e}")
+
+    return written_paths
+
+def sync_bot_config_from_cloud(sb: Optional[Client] = None) -> Dict[str, Any]:
+    global current_bot_config
+    if sb is None:
+        sb = get_supabase()
+
+    if sb is not None:
+        try:
+            res = sb.table("tms_bot_configs").select("*").eq("id", "default").limit(1).execute()
+            if res.data and len(res.data) > 0:
+                cloud_row = res.data[0]
+                current_bot_config.update(cloud_row)
+                strategy_engine.set_params(current_bot_config)
+                order_executor.set_params(current_bot_config)
+                export_ea_config_file(current_bot_config)
+                return current_bot_config
+        except Exception as e:
+            print(f"⚠️ [Bot Config Cloud Fetch] Warning: {e}")
+
+    export_ea_config_file(current_bot_config)
+    return current_bot_config
 
 # ------------------------------------------------------------------------------
 # Core Synchronization Logic
@@ -365,6 +570,7 @@ async def auto_sync_worker():
     while True:
         try:
             await asyncio.to_thread(sync_all_accounts_sync)
+            await asyncio.to_thread(sync_bot_config_from_cloud)
         except Exception as e:
             print(f"[Worker] Auto-sync loop error: {e}")
         await asyncio.sleep(SYNC_INTERVAL)
@@ -377,6 +583,9 @@ async def on_startup():
     print(f"  Supabase Configured: {bool(SUPABASE_URL and 'your-project' not in SUPABASE_URL)}")
     print(f"  Server listening on: http://localhost:{PORT}")
     print("==================================================================")
+
+    # Initial bot config load and MQL5 export
+    sync_bot_config_from_cloud()
 
     # Initial auto-bind and immediate sync
     if MT5_AVAILABLE and mt5 is not None:
@@ -526,6 +735,74 @@ def delete_account(login_id: int):
             print(f"[Supabase] Error deleting account {login_id}: {e}")
 
     return {"success": True, "message": f"Account #{login_id} removed"}
+
+# ------------------------------------------------------------------------------
+# Bot Deep Configuration Endpoints
+# ------------------------------------------------------------------------------
+@app.get("/api/bot/config")
+def get_bot_config():
+    """Returns current runtime deep bot & EA configuration."""
+    return current_bot_config
+
+@app.post("/api/bot/config")
+def update_bot_config(req: UpdateBotConfigRequest):
+    """
+    Updates deep EA configuration.
+    1. Updates local runtime config
+    2. Updates strategy_engine & order_executor
+    3. Writes new parameters into tms_ea_config.json for running MT5 EA
+    4. Upserts to Supabase Cloud tms_bot_configs table
+    """
+    global current_bot_config
+    patch_data = req.dict(exclude_unset=True)
+    for k, v in patch_data.items():
+        if v is not None:
+            if k == "advanced_params" and isinstance(v, dict):
+                current_bot_config.setdefault("advanced_params", {})
+                for cat, sub in v.items():
+                    if isinstance(sub, dict):
+                        current_bot_config["advanced_params"].setdefault(cat, {}).update(sub)
+                    else:
+                        current_bot_config["advanced_params"][cat] = sub
+            else:
+                current_bot_config[k] = v
+
+    current_bot_config["updated_at"] = datetime.now(timezone.utc).isoformat()
+    strategy_engine.set_params(current_bot_config)
+    order_executor.set_params(current_bot_config)
+
+    # Write to MT5 file paths
+    written_files = export_ea_config_file(current_bot_config)
+
+    # Upsert to Supabase Cloud
+    sb = get_supabase()
+    cloud_synced = False
+    if sb:
+        try:
+            sb.table("tms_bot_configs").upsert(current_bot_config).execute()
+            cloud_synced = True
+        except Exception as e:
+            print(f"⚠️ [Supabase] Bot config upload failed: {e}")
+
+    return {
+        "success": True,
+        "message": "Bot parameters updated and synced to MT5 EA configuration.",
+        "cloud_synced": cloud_synced,
+        "written_files": written_files,
+        "config": current_bot_config,
+    }
+
+@app.get("/api/bot/download-ea")
+def download_mql5_ea():
+    """Serves the pure native TMS_Quantum_EA.mq5 file directly for download."""
+    ea_path = Path(__file__).resolve().parent / "mql5" / "TMS_Quantum_EA.mq5"
+    if not ea_path.exists():
+        raise HTTPException(status_code=404, detail="EA file not found.")
+    return FileResponse(
+        path=str(ea_path),
+        filename="TMS_Quantum_EA.mq5",
+        media_type="text/plain; charset=utf-8",
+    )
 
 if __name__ == "__main__":
     import uvicorn

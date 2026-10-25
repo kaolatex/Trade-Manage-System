@@ -1,21 +1,27 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTrading } from '@/context/trading-context';
 import { useLanguage } from '@/context/language-context';
 import { EnvironmentBanner } from '@/components/bot/environment-banner';
-import { StrategyConfig } from '@/components/bot/strategy-config';
-import { RiskGuard } from '@/components/bot/risk-guard';
+import { DeepParameterStudio } from '@/components/bot/deep-parameter-studio';
 import { LiveTerminal } from '@/components/bot/live-terminal';
 import { RecentBotExecutions } from '@/components/bot/recent-bot-executions';
 import { SectionLabel } from '@/components/ui/card';
-import { Cpu, Terminal, History } from 'lucide-react';
+import { Cpu, Terminal, History, SlidersHorizontal } from 'lucide-react';
 import { BotConfig } from '@/lib/types';
 
 export default function BotSystemPage() {
   const { state, saveConfig } = useTrading();
   const { t } = useLanguage();
   const [localConfig, setLocalConfig] = useState<BotConfig>(state.config);
+
+  // Keep local form in sync when cloud/bridge hydrates config
+  useEffect(() => {
+    if (state.config) {
+      setLocalConfig(state.config);
+    }
+  }, [state.config]);
 
   const handleConfigPatch = (patch: Partial<BotConfig>) => {
     setLocalConfig((prev) => ({ ...prev, ...patch }));
@@ -34,7 +40,7 @@ export default function BotSystemPage() {
             {t.botPage.title}
           </h1>
           <p className="text-xs text-zinc-400">
-            {t.botPage.subtitle}
+            {t.botPage.subtitle} — Hybrid Native MQL5 EA + Cloud Deep Config System
           </p>
         </div>
       </div>
@@ -49,25 +55,22 @@ export default function BotSystemPage() {
         <EnvironmentBanner />
       </section>
 
-      {/* 2 & 3. Strategy Configuration & Risk Guard (2 columns on large screens) */}
+      {/* 2. Pro EA Deep Parameter Studio (Native MQL5 & Cloud Config 5-Tab System) */}
       <section className="space-y-2.5">
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-          {/* Strategy & Execution Form */}
-          <StrategyConfig
-            config={localConfig}
-            onChange={handleConfigPatch}
-          />
-
-          {/* Risk & Money Management Guard */}
-          <RiskGuard
-            config={localConfig}
-            onChange={handleConfigPatch}
-            onSave={handleSave}
-          />
-        </div>
+        <SectionLabel
+          title="EA Deep Customization Studio"
+          icon={<SlidersHorizontal className="text-cyan-400" />}
+          hint="Deep parameter tuning for Aggressive Scalper, Adaptive Quant, Basket TP, and MT5 .mq5 EA exporter"
+        />
+        <DeepParameterStudio
+          config={localConfig}
+          onChange={handleConfigPatch}
+          onSave={handleSave}
+          isSyncing={state.isSyncing}
+        />
       </section>
 
-      {/* 4. Real-time Bot Terminal (Live Console Logs) */}
+      {/* 3. Real-time Bot Terminal (Live Console Logs) */}
       <section className="space-y-2.5">
         <SectionLabel
           title={t.botPage.terminalSection}
@@ -77,7 +80,7 @@ export default function BotSystemPage() {
         <LiveTerminal />
       </section>
 
-      {/* 5. Recent Bot-Only Executions (Hard separation, purely bot orders) */}
+      {/* 4. Recent Bot-Only Executions (Hard separation, purely bot orders) */}
       <section className="space-y-2.5">
         <SectionLabel
           title={t.recentBotExecutions.title}
