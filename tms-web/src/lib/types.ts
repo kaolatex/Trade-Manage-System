@@ -160,6 +160,23 @@ export interface BotConfig {
   maxSpread: number;
 }
 
+export const DEFAULT_CONFIG: BotConfig = {
+  symbol: 'XAUUSD',
+  timeframe: 'M15',
+  sessions: { asian: false, london: true, newYork: true },
+  slPoints: 300,
+  tpPoints: 600,
+  autoBE: true,
+  trailingStop: false,
+  trailingPoints: 250,
+  lotMode: 'risk',
+  riskPercent: 1.0,
+  fixedLot: 0.01,
+  dailyLossLimit: 3.0,
+  maxConcurrent: 2,
+  maxSpread: 30,
+};
+
 export interface LogEntry {
   id: number;
   ts: number;

@@ -14,7 +14,8 @@ export function EnvironmentBanner() {
   const { t } = useLanguage();
   const [showPanicModal, setShowPanicModal] = useState(false);
 
-  const attachedAccount = state.accounts[botAccountId(state.botMode)];
+  const targetId = botAccountId(state.botMode, state.accounts);
+  const attachedAccount = state.accounts[targetId] || Object.values(state.accounts).find((a) => a.id !== 'all') || state.accounts.all;
   const isLive = state.botMode === 'live';
 
   return (
@@ -86,10 +87,10 @@ export function EnvironmentBanner() {
 
             <p className="text-xs text-zinc-400">
               {t.environmentBanner.attachedTo}{' '}
-              <strong className="text-zinc-200">{attachedAccount.name}</strong> &bull;{' '}
-              <span className="num">#{attachedAccount.login}</span> ({attachedAccount.server}) &bull;{' '}
+              <strong className="text-zinc-200">{attachedAccount?.name || 'No Synced Account'}</strong> &bull;{' '}
+              <span className="num">#{attachedAccount?.login || 'NONE'}</span> ({attachedAccount?.server || 'HFM'}) &bull;{' '}
               {t.environmentBanner.balanceLabel}{' '}
-              <span className="num text-zinc-200">${attachedAccount.balance.toLocaleString()}</span>
+              <span className="num text-zinc-200">${(attachedAccount?.balance ?? 0).toLocaleString()}</span>
             </p>
           </div>
 

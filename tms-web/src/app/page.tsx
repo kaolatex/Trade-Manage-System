@@ -6,6 +6,7 @@ import { EquityChart } from '@/components/portfolio/equity-chart';
 import { SessionStats } from '@/components/portfolio/session-stats';
 import { ActivePositionsTable } from '@/components/portfolio/active-positions-table';
 import { TradingJournal } from '@/components/portfolio/trading-journal';
+import { NoAccountEmptyState } from '@/components/portfolio/no-account-empty-state';
 import { SectionLabel } from '@/components/ui/card';
 import { useLanguage } from '@/context/language-context';
 import { LayoutDashboard, TrendingUp, Layers, BookOpen } from 'lucide-react';
@@ -26,6 +27,9 @@ export default function PortfolioPage() {
           </p>
         </div>
       </div>
+
+      {/* Zero-Mock Empty State Banner (Shown when no HFM accounts synced yet) */}
+      <NoAccountEmptyState />
 
       {/* Master View Switcher (Hard Separation of Manual / Bot / Combined) */}
       <MasterViewSwitcher />

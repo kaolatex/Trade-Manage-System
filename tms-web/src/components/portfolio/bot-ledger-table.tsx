@@ -20,9 +20,10 @@ export function BotLedgerTable({
 }) {
   const { state, patchJournal } = useTrading();
   const { t } = useLanguage();
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
 
-  let botTrades = currentAccount.journal.filter(
+  let botTrades = journal.filter(
     (j) => j.execution_type === 'BOT',
   );
 

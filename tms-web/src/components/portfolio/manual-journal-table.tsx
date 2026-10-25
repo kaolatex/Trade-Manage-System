@@ -14,9 +14,10 @@ import { cn } from '@/lib/utils';
 export function ManualJournalTable({ standalone = true }: { standalone?: boolean }) {
   const { state, patchJournal } = useTrading();
   const { t } = useLanguage();
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
 
-  const manualTrades = currentAccount.journal.filter(
+  const manualTrades = journal.filter(
     (j) => j.execution_type === 'MANUAL',
   );
 

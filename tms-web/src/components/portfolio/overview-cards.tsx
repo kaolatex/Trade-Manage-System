@@ -18,7 +18,10 @@ export function OverviewCards() {
   const { state } = useTrading();
   const { t } = useLanguage();
   const viewMode = state.portfolioViewMode;
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const balance = currentAccount?.balance ?? 0;
+  const server = currentAccount?.server || 'HFM Multi-Broker';
+  const leverage = currentAccount?.leverage || 500;
 
   const filter = viewMode === 'manual' ? 'MANUAL' : viewMode === 'bot' ? 'BOT' : undefined;
   const metrics = getAccountMetrics(currentAccount, state.prices, filter);
@@ -28,15 +31,15 @@ export function OverviewCards() {
   const cards = [
     {
       title: t.overviewCards.balanceTitle,
-      value: fmtMoney(currentAccount.balance),
-      subtext: `${t.overviewCards.balanceSub} ${currentAccount.server}`,
+      value: fmtMoney(balance),
+      subtext: `${t.overviewCards.balanceSub} ${server}`,
       icon: Wallet,
       tone: 'neutral',
     },
     {
       title: t.overviewCards.equityTitle,
       value: fmtMoney(metrics.equity),
-      subtext: `${t.overviewCards.equitySub} 1:${currentAccount.leverage}`,
+      subtext: `${t.overviewCards.equitySub} 1:${leverage}`,
       icon: TrendingUp,
       tone: isProfit ? 'profit' : 'loss',
       badge: isProfit ? `+${fmtMoney(metrics.floating)}` : fmtMoney(metrics.floating),

@@ -12,10 +12,11 @@ import { cn } from '@/lib/utils';
 export function ActivePositionsTable() {
   const { state, closePosition, breakEven } = useTrading();
   const { t } = useLanguage();
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
   const viewMode = state.portfolioViewMode;
+  const positions = currentAccount?.positions || [];
 
-  const filteredPositions = currentAccount.positions.filter((p) => {
+  const filteredPositions = positions.filter((p) => {
     if (viewMode === 'manual') return p.execution_type === 'MANUAL';
     if (viewMode === 'bot') return p.execution_type === 'BOT';
     return true;

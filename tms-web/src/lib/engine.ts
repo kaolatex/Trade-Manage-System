@@ -16,16 +16,15 @@ export const TIMEFRAMES: Timeframe[] = ['M1', 'M5', 'M15', 'H1'];
 
 export const botAccountId = (mode: BotMode, accounts?: Record<AccountId, Account>): AccountId => {
   if (accounts) {
-    if (mode === 'demo' && accounts['demo-1']) return 'demo-1';
-    if (mode === 'live' && accounts['live-master']) return 'live-master';
     const found = (Object.keys(accounts) as AccountId[]).find(
       (id) => id !== 'all' && accounts[id]?.kind === mode,
     );
     if (found) return found;
     const firstNonAll = (Object.keys(accounts) as AccountId[]).find((id) => id !== 'all');
     if (firstNonAll) return firstNonAll;
+    if ('all' in accounts) return 'all';
   }
-  return mode === 'demo' ? 'demo-1' : 'live-master';
+  return 'all';
 };
 
 /* ------------------------------------------------------------------ */

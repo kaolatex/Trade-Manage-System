@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type {
   Account,
   AccountId,
+  EquityPoint,
   ExecutionType,
   JournalEntry,
   Position,
@@ -129,6 +130,39 @@ export function mapDbJournalToApp(j: DbJournalEntry): JournalEntry {
   };
 }
 
+export function buildRealEquityHistory(
+  currentBalance: number,
+  journal: JournalEntry[],
+  filter?: ExecutionType,
+): EquityPoint[] {
+  const filtered = filter ? journal.filter((j) => j.execution_type === filter) : journal;
+  if (!filtered.length) {
+    return currentBalance > 0 ? [{ date: Date.now(), equity: round2(currentBalance) }] : [];
+  }
+
+  // Sort chronologically ascending
+  const sorted = [...filtered].sort((a, b) => a.closeTime - b.closeTime);
+
+  // Reconstruct historical equity points based on actual trade PnL
+  const totalPnl = sorted.reduce((sum, t) => sum + (t.pnl || 0), 0);
+  let running = round2(currentBalance - totalPnl);
+
+  const points: EquityPoint[] = [];
+  points.push({ date: sorted[0].closeTime - 60_000, equity: round2(running) });
+
+  for (const t of sorted) {
+    running = round2(running + (t.pnl || 0));
+    points.push({ date: t.closeTime, equity: round2(running) });
+  }
+
+  const now = Date.now();
+  if (points.length && points[points.length - 1].date < now) {
+    points.push({ date: now, equity: round2(currentBalance) });
+  }
+
+  return points;
+}
+
 export function mapDbAccountToApp(
   acc: DbAccount,
   positions: Position[],
@@ -137,17 +171,11 @@ export function mapDbAccountToApp(
   const id = `hfm-${acc.login_id}` as AccountId;
   const computed = computeJournalStats(journal);
 
-  // Generate 14D equity curve points from historical trades and ending balance
-  const now = Date.now();
-  const DAY = 24 * 60 * 60 * 1000;
-  const equityHistory = Array.from({ length: 14 }).map((_, i) => {
-    const daysAgo = 13 - i;
-    const factor = 1 - (daysAgo * 0.008);
-    return {
-      date: now - daysAgo * DAY,
-      equity: round2(Number(acc.equity || acc.balance) * factor),
-    };
-  });
+  // Compute 100% REAL equity history based on actual closed deals
+  const balanceNum = Number(acc.balance);
+  const equityHistory = buildRealEquityHistory(balanceNum, journal);
+  const equityHistoryManual = buildRealEquityHistory(balanceNum, journal, 'MANUAL');
+  const equityHistoryBot = buildRealEquityHistory(balanceNum, journal, 'BOT');
 
   return {
     id,
@@ -156,14 +184,14 @@ export function mapDbAccountToApp(
     login: String(acc.login_id),
     server: acc.server,
     leverage: 500,
-    balance: Number(acc.balance),
-    dailyStartBalance: Number(acc.balance),
+    balance: balanceNum,
+    dailyStartBalance: balanceNum,
     dailyLossPct: 0,
     positions,
     journal,
     equityHistory,
-    equityHistoryManual: equityHistory.map((p) => ({ ...p, equity: round2(p.equity * 0.45) })),
-    equityHistoryBot: equityHistory.map((p) => ({ ...p, equity: round2(p.equity * 0.55) })),
+    equityHistoryManual,
+    equityHistoryBot,
     stats: computed.stats,
     sessions: computed.sessions,
   };
@@ -176,8 +204,9 @@ export function mapDbAccountToApp(
 export async function fetchSupabaseCloudData(): Promise<{
   accounts: Record<AccountId, Account>;
   hasData: boolean;
+  error: string | null;
 }> {
-  if (!supabase) return { accounts: {}, hasData: false };
+  if (!supabase) return { accounts: {}, hasData: false, error: 'Supabase client is not configured' };
 
   try {
     const [accRes, posRes, jRes] = await Promise.all([
@@ -186,8 +215,13 @@ export async function fetchSupabaseCloudData(): Promise<{
       supabase.from('tms_trade_journal').select('*').order('close_time', { ascending: false }),
     ]);
 
-    if (accRes.error || !accRes.data || accRes.data.length === 0) {
-      return { accounts: {}, hasData: false };
+    if (accRes.error) {
+      console.error('[Supabase] Error fetching accounts:', accRes.error);
+      return { accounts: {}, hasData: false, error: accRes.error.message };
+    }
+
+    if (!accRes.data || accRes.data.length === 0) {
+      return { accounts: {}, hasData: false, error: null };
     }
 
     const dbAccounts: DbAccount[] = accRes.data;
@@ -209,10 +243,10 @@ export async function fetchSupabaseCloudData(): Promise<{
       accountsRecord[appAcc.id] = appAcc;
     }
 
-    return { accounts: accountsRecord, hasData: Object.keys(accountsRecord).length > 0 };
-  } catch (err) {
+    return { accounts: accountsRecord, hasData: Object.keys(accountsRecord).length > 0, error: null };
+  } catch (err: any) {
     console.error('[Supabase] Failed to fetch cloud data:', err);
-    return { accounts: {}, hasData: false };
+    return { accounts: {}, hasData: false, error: err?.message || 'Network exception connecting to Supabase' };
   }
 }
 

@@ -40,7 +40,8 @@ export function EquityChart() {
   const { state } = useTrading();
   const { t } = useLanguage();
   const viewMode = state.portfolioViewMode;
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const balance = currentAccount?.balance ?? 0;
 
   const chartTheme = useMemo(() => {
     if (viewMode === 'manual') {
@@ -71,18 +72,22 @@ export function EquityChart() {
   }, [viewMode]);
 
   const rawHistory = useMemo(() => {
-    if (viewMode === 'manual' && currentAccount.equityHistoryManual) {
+    if (!currentAccount) return [];
+    if (viewMode === 'manual' && currentAccount.equityHistoryManual?.length) {
       return currentAccount.equityHistoryManual;
     }
-    if (viewMode === 'bot' && currentAccount.equityHistoryBot) {
+    if (viewMode === 'bot' && currentAccount.equityHistoryBot?.length) {
       return currentAccount.equityHistoryBot;
     }
-    return currentAccount.equityHistory;
+    return currentAccount.equityHistory || [];
   }, [viewMode, currentAccount]);
 
   const chartData = useMemo(() => {
+    if (!rawHistory.length) {
+      return [{ date: Date.now(), equity: balance }];
+    }
     const list = [...rawHistory];
-    const latest = list[list.length - 1]?.equity || currentAccount.balance;
+    const latest = list[list.length - 1]?.equity ?? balance;
     return [
       ...list,
       {
@@ -90,21 +95,23 @@ export function EquityChart() {
         equity: latest,
       },
     ];
-  }, [rawHistory, currentAccount.balance]);
+  }, [rawHistory, balance]);
 
   const minEquity = useMemo(() => {
-    const min = Math.min(...chartData.map((d) => d.equity));
-    return Math.floor(min * 0.985);
+    const equities = chartData.map((d) => d.equity);
+    const min = equities.length ? Math.min(...equities) : 0;
+    return Math.max(0, Math.floor(min * 0.985));
   }, [chartData]);
 
   const maxEquity = useMemo(() => {
-    const max = Math.max(...chartData.map((d) => d.equity));
-    return Math.ceil(max * 1.015);
+    const equities = chartData.map((d) => d.equity);
+    const max = equities.length ? Math.max(...equities) : 0;
+    return max <= 0 ? 100 : Math.ceil(max * 1.015);
   }, [chartData]);
 
-  const initialVal = chartData[0]?.equity || 10000;
-  const currentVal = chartData[chartData.length - 1]?.equity || 10000;
-  const growth = ((currentVal - initialVal) / initialVal) * 100;
+  const initialVal = chartData[0]?.equity ?? 0;
+  const currentVal = chartData[chartData.length - 1]?.equity ?? 0;
+  const growth = initialVal > 0 ? ((currentVal - initialVal) / initialVal) * 100 : 0;
   const netGain = currentVal - initialVal;
 
   return (

@@ -10,8 +10,9 @@ import Link from 'next/link';
 export function RecentBotExecutions() {
   const { state } = useTrading();
   const { t } = useLanguage();
-  const currentAccount = state.accounts[state.selectedAccountId];
-  const botTrades = currentAccount.journal.filter((j) => j.execution_type === 'BOT');
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
+  const botTrades = journal.filter((j) => j.execution_type === 'BOT');
 
   return (
     <Card className="p-0 border-violet-500/20">

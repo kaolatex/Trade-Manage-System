@@ -14,17 +14,18 @@ export function SessionStats() {
   const { state } = useTrading();
   const { t } = useLanguage();
   const viewMode = state.portfolioViewMode;
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
 
   const filteredJournal = useMemo(() => {
     if (viewMode === 'manual') {
-      return currentAccount.journal.filter((j) => j.execution_type === 'MANUAL');
+      return journal.filter((j) => j.execution_type === 'MANUAL');
     }
     if (viewMode === 'bot') {
-      return currentAccount.journal.filter((j) => j.execution_type === 'BOT');
+      return journal.filter((j) => j.execution_type === 'BOT');
     }
-    return currentAccount.journal;
-  }, [viewMode, currentAccount.journal]);
+    return journal;
+  }, [viewMode, journal]);
 
   const { stats, sessions } = useMemo(() => {
     return computeJournalStats(filteredJournal);

@@ -15,9 +15,10 @@ export function TradingJournal() {
   const [combinedSubTab, setCombinedSubTab] = useState<'manual' | 'bot'>('manual');
   const viewMode = state.portfolioViewMode;
 
-  const currentAccount = state.accounts[state.selectedAccountId];
-  const manualCount = currentAccount.journal.filter((j) => j.execution_type === 'MANUAL').length;
-  const botCount = currentAccount.journal.filter((j) => j.execution_type === 'BOT').length;
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
+  const manualCount = journal.filter((j) => j.execution_type === 'MANUAL').length;
+  const botCount = journal.filter((j) => j.execution_type === 'BOT').length;
 
   if (viewMode === 'manual') {
     return <ManualJournalTable standalone={true} />;

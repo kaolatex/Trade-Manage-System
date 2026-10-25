@@ -79,51 +79,71 @@ export function TopHeader() {
             <TmsLogo size="sm" />
           </div>
 
-          {/* MT5 Bridge Status vs Cloud Mode Indicator */}
-          {state.bridgeStatus.connected ? (
+          {/* 1. Supabase DB Status Indicator */}
+          {state.supabaseStatus.connected ? (
             <div
-              className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-950/40 px-2.5 py-1 text-xs text-emerald-300"
-              title="Connected to local MetaTrader 5 Python Sync Bridge"
+              className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/40 px-2.5 py-1 text-xs text-emerald-300"
+              title="Supabase Cloud Database connected and operational"
             >
               <span className="relative flex size-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
               </span>
               <span className="font-medium text-[11px] text-emerald-200">
-                🟢 Local MT5 Bridge Active
+                Supabase DB: 🟢 Connected
+              </span>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/40 px-2.5 py-1 text-xs text-rose-300"
+              title={state.supabaseStatus.error || 'Cannot connect to Supabase Cloud'}
+            >
+              <span className="size-2 rounded-full bg-rose-500"></span>
+              <span className="font-medium text-[11px] text-rose-200">
+                Supabase DB: 🔴 {state.supabaseStatus.error ? `Error (${state.supabaseStatus.error.slice(0, 24)}...)` : 'Error'}
+              </span>
+            </div>
+          )}
+
+          {/* 2. Local MT5 Bridge (Port 8000) Status Indicator */}
+          {state.bridgeStatus.connected ? (
+            <div
+              className="hidden sm:flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-950/40 px-2.5 py-1 text-xs text-emerald-300"
+              title="Connected to local MetaTrader 5 Python Sync Bridge (Port 8000)"
+            >
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
+              </span>
+              <span className="font-medium text-[11px] text-emerald-200">
+                Local MT5 Bridge: 🟢 Online
               </span>
               <span className="text-emerald-700">&bull;</span>
-              <span className="num text-[11px] text-emerald-400">
+              <span className="num text-[11px] text-emerald-400 font-mono">
                 {state.bridgeStatus.latency}ms
               </span>
             </div>
           ) : (
             <div
-              className="flex items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-950/30 px-2.5 py-1 text-xs text-sky-300"
-              title={
-                language === 'th'
-                  ? 'เปิดดูผ่าน Supabase Cloud (PC ออฟไลน์หรือเปิดจากมือถือ)'
-                  : 'Viewing cached Supabase Cloud data (offline or remote access)'
-              }
+              className="hidden sm:flex items-center gap-1.5 rounded-full border border-zinc-700/60 bg-zinc-900/60 px-2.5 py-1 text-xs text-zinc-400"
+              title="Local MT5 Bridge is not running on port 8000. Displaying cached Supabase Cloud data."
             >
-              <Cloud className="size-3 text-sky-400" />
-              <span className="font-medium text-[11px] text-sky-200">
-                ☁️ Cloud Mode
+              <span className="size-2 rounded-full bg-zinc-500"></span>
+              <span className="font-medium text-[11px] text-zinc-300">
+                Local MT5 Bridge: ⚪ Offline (Viewing Cloud Data)
               </span>
-              <span className="text-sky-700">&bull;</span>
-              <span className="text-[10px] text-sky-400 font-mono">Supabase</span>
             </div>
           )}
 
-          {/* Sync Now Button */}
+          {/* 3. Refresh from Cloud Button */}
           <button
             type="button"
             onClick={() => triggerSyncNow()}
             disabled={state.isSyncing}
             title={
               language === 'th'
-                ? 'ซิงค์ข้อมูล MT5 และ Supabase ตอนนี้'
-                : 'Sync portfolio data now with MT5 & Supabase'
+                ? 'ดึงข้อมูลล่าสุดจาก Supabase Cloud และกระตุ้น MT5 Bridge'
+                : 'Refresh latest data from Supabase Cloud'
             }
             className={cn(
               'flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-surface px-2.5 py-1 text-xs text-zinc-300 transition-all hover:border-zinc-700 hover:bg-zinc-800 active:scale-95',
@@ -139,9 +159,9 @@ export function TopHeader() {
             <span className="hidden md:inline font-medium text-[11px]">
               {state.isSyncing
                 ? language === 'th'
-                  ? 'กำลังซิงค์...'
-                  : 'Syncing...'
-                : '🔄 Sync Now'}
+                  ? 'กำลังดึงข้อมูล...'
+                  : 'Refreshing...'
+                : '🔄 Refresh from Cloud'}
             </span>
           </button>
         </div>

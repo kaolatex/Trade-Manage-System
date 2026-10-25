@@ -10,11 +10,12 @@ export function MasterViewSwitcher() {
   const { state, setPortfolioViewMode } = useTrading();
   const { t } = useLanguage();
   const currentMode = state.portfolioViewMode;
-  const currentAccount = state.accounts[state.selectedAccountId];
+  const currentAccount = state.accounts[state.selectedAccountId] || state.accounts.all;
+  const journal = currentAccount?.journal || [];
 
-  const manualCount = currentAccount.journal.filter((j) => j.execution_type === 'MANUAL').length;
-  const botCount = currentAccount.journal.filter((j) => j.execution_type === 'BOT').length;
-  const totalCount = currentAccount.journal.length;
+  const manualCount = journal.filter((j) => j.execution_type === 'MANUAL').length;
+  const botCount = journal.filter((j) => j.execution_type === 'BOT').length;
+  const totalCount = journal.length;
 
   const views: Array<{
     id: PortfolioViewMode;

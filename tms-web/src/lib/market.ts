@@ -52,25 +52,30 @@ export interface AccountMetrics {
 }
 
 export function getAccountMetrics(
-  acc: Account,
-  prices: Record<SymbolCode, number>,
+  acc?: Account | null,
+  prices?: Record<SymbolCode, number>,
   executionFilter?: 'MANUAL' | 'BOT',
 ): AccountMetrics {
+  const safePrices = prices || INITIAL_PRICES;
+  const balance = Number(acc?.balance || 0);
+  const leverage = Number(acc?.leverage || 500);
   const activePositions = executionFilter
-    ? acc.positions.filter((p) => p.execution_type === executionFilter)
-    : acc.positions;
+    ? (acc?.positions || []).filter((p) => p.execution_type === executionFilter)
+    : (acc?.positions || []);
 
   let floating = 0;
   let margin = 0;
   for (const p of activePositions) {
     const spec = SYMBOLS[p.symbol];
-    floating += calcPnl(p, prices[p.symbol]);
-    margin += (p.lot * spec.contract * p.entry) / acc.leverage;
+    if (spec) {
+      floating += calcPnl(p, safePrices[p.symbol] || p.entry);
+      margin += (p.lot * spec.contract * p.entry) / leverage;
+    }
   }
-  const equity = acc.balance + floating;
+  const equity = balance + floating;
   return {
     floating: round2(floating),
-    floatingPct: acc.balance ? (floating / acc.balance) * 100 : 0,
+    floatingPct: balance ? (floating / balance) * 100 : 0,
     equity: round2(equity),
     margin: round2(margin),
     freeMargin: round2(equity - margin),

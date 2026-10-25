@@ -4,22 +4,31 @@ Runs on port 8000. Synchronizes HFM MT5 account metrics, active positions,
 and 90-day trade history directly into Supabase Cloud tables:
 - tms_accounts
 - tms_active_positions 
-- tms_trade_journal (Preserving existing user notes and audit logs)
+- tms_trade_journal (Preserving existing user notes and audit tags)
 """
 
 import os
+import sys
 import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+# Fix Windows console UTF-8 output encoding (CP874 / CP1252)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Try importing MetaTrader5 if supported on this Python/OS
+# MetaTrader 5 Native Library
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
@@ -27,7 +36,7 @@ except (ImportError, Exception):
     mt5 = None
     MT5_AVAILABLE = False
 
-# Try importing Supabase client
+# Supabase Client
 try:
     from supabase import create_client, Client
     SUPABASE_LIB_AVAILABLE = True
@@ -49,7 +58,7 @@ CREDENTIALS_FILE = Path(__file__).resolve().parent / "local_credentials.json"
 app = FastAPI(
     title="TMS MT5 Cloud Sync Service",
     description="Bridge connecting local MetaTrader 5 (HFM) with Supabase Cloud",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # Enable CORS for Next.js web client
@@ -78,7 +87,7 @@ def get_supabase() -> Optional[Client]:
         return None
 
 # ------------------------------------------------------------------------------
-# Local Credentials Storage (Passwords stay local only!)
+# Local Credentials Storage (Saved securely locally only)
 # ------------------------------------------------------------------------------
 def load_credentials() -> List[Dict[str, Any]]:
     if not CREDENTIALS_FILE.exists():
@@ -95,7 +104,6 @@ def save_credentials(creds: List[Dict[str, Any]]) -> None:
 
 def store_account_credential(login_id: int, password: str, server: str, account_name: str) -> None:
     creds = load_credentials()
-    # Check if exists -> update, else append
     existing = False
     for c in creds:
         if int(c["login_id"]) == login_id:
@@ -119,7 +127,8 @@ def store_account_credential(login_id: int, password: str, server: str, account_
 # Models
 # ------------------------------------------------------------------------------
 class AddAccountRequest(BaseModel):
-    login_id: int
+    login_id: Optional[int] = None
+    login: Optional[int] = None
     password: str
     server: str
     account_name: Optional[str] = None
@@ -134,139 +143,166 @@ class SyncResponse(BaseModel):
 # Core Synchronization Logic
 # ------------------------------------------------------------------------------
 last_sync_time: Optional[str] = None
+last_active_account: Optional[Dict[str, Any]] = None
 is_syncing = False
 
-def sync_single_account(cred: Dict[str, Any], sb: Optional[Client]) -> Dict[str, Any]:
-    login_id = int(cred["login_id"])
-    server = cred["server"]
-    password = cred["password"]
-    account_name = cred.get("account_name") or f"HFM {login_id}"
-    now_iso = datetime.now(timezone.utc).isoformat()
+def sync_active_terminal_account(sb: Optional[Client] = None) -> Optional[Dict[str, Any]]:
+    """
+    Auto-binds to the currently running MT5 terminal instance,
+    extracts real account metrics, open positions, and 90-day history deals,
+    and upserts them directly into Supabase.
+    """
+    global last_sync_time, last_active_account
+    if not MT5_AVAILABLE or mt5 is None:
+        print("❌ MetaTrader5 library is not available.")
+        return None
 
+    # Step 1: Auto-bind to running MT5 Terminal
+    if not mt5.initialize():
+        err = mt5.last_error()
+        print(f"❌ mt5.initialize() failed: {err}")
+        return None
+
+    # Step 2: Extract current logged-in account info
+    acc = mt5.account_info()
+    if acc is None:
+        err = mt5.last_error()
+        print(f"⚠️ mt5.account_info() is None: {err}")
+        return None
+
+    login_id = int(acc.login)
+    account_name = acc.name or f"HFM {login_id}"
+    server = acc.server
+    balance = round(float(acc.balance), 2)
+    equity = round(float(acc.equity), 2)
+    floating_pnl = round(float(equity - balance), 2)
+    margin_level = round(float(acc.margin_level), 2) if acc.margin else None
+    currency = acc.currency or "USD"
+    is_demo = acc.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
+
+    now_iso = datetime.now(timezone.utc).isoformat()
     account_record = {
         "login_id": login_id,
         "account_name": account_name,
         "server": server,
-        "balance": 10000.0,
-        "equity": 10000.0,
-        "floating_pnl": 0.0,
-        "margin_level": None,
-        "currency": "USD",
-        "is_demo": "demo" in server.lower(),
+        "balance": balance,
+        "equity": equity,
+        "floating_pnl": floating_pnl,
+        "margin_level": margin_level,
+        "currency": currency,
+        "is_demo": is_demo,
         "last_synced_at": now_iso,
     }
+
+    last_active_account = account_record
+
+    # Step 3: Fetch active positions
     active_positions: List[Dict[str, Any]] = []
+    raw_positions = mt5.positions_get()
+    if raw_positions:
+        for p in raw_positions:
+            pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+            exec_type = "MANUAL" if p.magic == 0 else "BOT"
+            open_dt = datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat()
+            active_positions.append({
+                "ticket": int(p.ticket),
+                "login_id": login_id,
+                "symbol": p.symbol,
+                "order_type": pos_type,
+                "execution_type": exec_type,
+                "lot": float(p.volume),
+                "entry_price": float(p.price_open),
+                "current_price": float(p.price_current),
+                "sl": float(p.sl),
+                "tp": float(p.tp),
+                "floating_profit": round(float(p.profit), 2),
+                "magic_number": int(p.magic),
+                "open_time": open_dt,
+            })
+
+    # Step 4: Fetch 90-day history deals and pair by position_id
     trade_journal: List[Dict[str, Any]] = []
+    from_date = datetime.now() - timedelta(days=90)
+    raw_deals = mt5.history_deals_get(from_date, datetime.now())
+    if raw_deals:
+        pos_map: Dict[int, List[Any]] = {}
+        for d in raw_deals:
+            pos_map.setdefault(d.position_id, []).append(d)
 
-    # 1. Native MetaTrader 5 Sync
-    if MT5_AVAILABLE and mt5 is not None:
-        try:
-            if not mt5.initialize():
-                print(f"[MT5] initialize() failed: {mt5.last_error()}")
-            else:
-                authorized = mt5.login(login=login_id, password=password, server=server)
-                if authorized:
-                    info = mt5.account_info()
-                    if info:
-                        account_record.update({
-                            "balance": round(float(info.balance), 2),
-                            "equity": round(float(info.equity), 2),
-                            "floating_pnl": round(float(info.equity - info.balance), 2),
-                            "margin_level": round(float(info.margin_level), 2) if info.margin else None,
-                            "currency": info.currency or "USD",
-                            "is_demo": info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO,
-                        })
+        seen_tickets = set()
+        for pos_id, p_deals in pos_map.items():
+            in_deals = [d for d in p_deals if d.entry == mt5.DEAL_ENTRY_IN]
+            out_deals = [d for d in p_deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT) and d.profit != 0]
 
-                    # Active Positions
-                    raw_positions = mt5.positions_get()
-                    if raw_positions:
-                        for p in raw_positions:
-                            pos_type = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
-                            exec_type = "MANUAL" if p.magic == 0 else "BOT"
-                            open_dt = datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat()
-                            active_positions.append({
-                                "ticket": int(p.ticket),
-                                "login_id": login_id,
-                                "symbol": p.symbol,
-                                "order_type": pos_type,
-                                "execution_type": exec_type,
-                                "lot": float(p.volume),
-                                "entry_price": float(p.price_open),
-                                "current_price": float(p.price_current),
-                                "sl": float(p.sl),
-                                "tp": float(p.tp),
-                                "floating_profit": round(float(p.profit), 2),
-                                "magic_number": int(p.magic),
-                                "open_time": open_dt,
-                            })
+            for out in out_deals:
+                in_d = in_deals[0] if in_deals else None
+                entry_price = float(in_d.price) if in_d else float(out.price)
+                exit_price = float(out.price)
+                order_type = "BUY" if (in_d and in_d.type == mt5.DEAL_TYPE_BUY) or (not in_d and out.type == mt5.DEAL_TYPE_SELL) else "SELL"
+                exec_type = "MANUAL" if out.magic == 0 else "BOT"
+                net_pnl = round(float(out.profit + out.swap + out.commission), 2)
+                close_dt = datetime.fromtimestamp(out.time, tz=timezone.utc).isoformat()
 
-                    # 90-Day History Deals
-                    from_date = datetime.now() - timedelta(days=90)
-                    raw_deals = mt5.history_deals_get(from_date, datetime.now())
-                    if raw_deals:
-                        for d in raw_deals:
-                            # Consider deals that close a position (OUT or INOUT)
-                            if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT) and d.profit != 0:
-                                d_type = "BUY" if d.type == mt5.DEAL_TYPE_BUY else "SELL"
-                                exec_type = "MANUAL" if d.magic == 0 else "BOT"
-                                close_dt = datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat()
-                                net_pnl = round(float(d.profit + d.swap + d.commission), 2)
-                                trade_journal.append({
-                                    "ticket": int(d.position_id or d.ticket),
-                                    "login_id": login_id,
-                                    "symbol": d.symbol,
-                                    "order_type": d_type,
-                                    "execution_type": exec_type,
-                                    "lot": float(d.volume),
-                                    "entry_price": float(d.price),
-                                    "exit_price": float(d.price),
-                                    "net_pnl": net_pnl,
-                                    "magic_number": int(d.magic),
-                                    "close_time": close_dt,
-                                })
-                else:
-                    print(f"[MT5] Login failed for {login_id} on {server}: {mt5.last_error()}")
-        except Exception as e:
-            print(f"[MT5] Error syncing {login_id}: {e}")
+                t_id = int(pos_id) if (pos_id and pos_id not in seen_tickets) else int(out.ticket)
+                seen_tickets.add(t_id)
 
-    # 2. Upload to Supabase Cloud
+                trade_journal.append({
+                    "ticket": t_id,
+                    "login_id": login_id,
+                    "symbol": out.symbol,
+                    "order_type": order_type,
+                    "execution_type": exec_type,
+                    "lot": float(out.volume),
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "net_pnl": net_pnl,
+                    "magic_number": int(out.magic),
+                    "close_time": close_dt,
+                })
+
+    # Step 5: Upload clean real data to Supabase Cloud
+    if sb is None:
+        sb = get_supabase()
+
     if sb is not None:
         try:
-            # Upsert Account Profile
+            # 1. Upsert Account Profile
             sb.table("tms_accounts").upsert(account_record).execute()
 
-            # Active Positions: Delete removed positions and upsert active ones
+            # 2. Active Positions: Clean old positions for this login_id and insert live ones
             sb.table("tms_active_positions").delete().eq("login_id", login_id).execute()
             if active_positions:
                 sb.table("tms_active_positions").upsert(active_positions).execute()
 
-            # Trade Journal:
-            # CRITICAL: Preserve existing user notes and audit logs!
+            # 3. Trade Journal: Preserve existing manual notes and tags
             if trade_journal:
-                res = sb.table("tms_trade_journal").select(
-                    "ticket, setup_tag, emotion_state, user_note, audit_note"
-                ).eq("login_id", login_id).execute()
+                try:
+                    res = sb.table("tms_trade_journal").select(
+                        "ticket, setup_tag, emotion_state, user_note, audit_note"
+                    ).eq("login_id", login_id).execute()
 
-                existing_notes = {int(r["ticket"]): r for r in (res.data or [])}
-
-                for row in trade_journal:
-                    ticket = row["ticket"]
-                    if ticket in existing_notes:
-                        old = existing_notes[ticket]
-                        if old.get("setup_tag"):
-                            row["setup_tag"] = old["setup_tag"]
-                        if old.get("emotion_state"):
-                            row["emotion_state"] = old["emotion_state"]
-                        if old.get("user_note"):
-                            row["user_note"] = old["user_note"]
-                        if old.get("audit_note"):
-                            row["audit_note"] = old["audit_note"]
+                    existing_notes = {int(r["ticket"]): r for r in (res.data or [])}
+                    for row in trade_journal:
+                        ticket = row["ticket"]
+                        if ticket in existing_notes:
+                            old = existing_notes[ticket]
+                            if old.get("setup_tag"): row["setup_tag"] = old["setup_tag"]
+                            if old.get("emotion_state"): row["emotion_state"] = old["emotion_state"]
+                            if old.get("user_note"): row["user_note"] = old["user_note"]
+                            if old.get("audit_note"): row["audit_note"] = old["audit_note"]
+                except Exception as ne:
+                    print(f"⚠️ Note lookup warning: {ne}")
 
                 sb.table("tms_trade_journal").upsert(trade_journal).execute()
 
-            print(f"[Sync] Successfully synced account {login_id} ({account_name}) to Supabase ✓")
+            last_sync_time = now_iso
+            print(f"📤 Synced: 1 Account (#{login_id}), {len(active_positions)} Open Positions, {len(trade_journal)} History Deals to Supabase")
         except Exception as e:
-            print(f"[Supabase] Error uploading account {login_id}: {e}")
+            print(f"❌ [Supabase] Error uploading account {login_id}: {e}")
+            if "row-level security" in str(e).lower() or "42501" in str(e):
+                print("💡 [Fix RLS Error] In Supabase Dashboard -> SQL Editor, run the updated supabase_schema.sql, or use the 'service_role' secret in tms-bot/.env")
+    else:
+        print(f"⚠️ [Sync] Supabase not connected. Local data ready: #{login_id} balance ${balance}")
 
     return {
         "login_id": login_id,
@@ -276,27 +312,56 @@ def sync_single_account(cred: Dict[str, Any], sb: Optional[Client]) -> Dict[str,
     }
 
 def sync_all_accounts_sync() -> int:
-    global last_sync_time, is_syncing
+    global is_syncing
     if is_syncing:
         return 0
     is_syncing = True
     sb = get_supabase()
-    creds = load_credentials()
     synced = 0
     try:
-        for cred in creds:
-            sync_single_account(cred, sb)
+        # 1. Primary Sync: Active logged-in MT5 Terminal account
+        active_res = sync_active_terminal_account(sb)
+        if active_res:
             synced += 1
-        last_sync_time = datetime.now(timezone.utc).isoformat()
+
+        # 2. Secondary Sync: If there are additional saved credentials with different logins
+        creds = load_credentials()
+        for cred in creds:
+            c_login = int(cred["login_id"])
+            if active_res and c_login == active_res["login_id"]:
+                continue  # already synced
+
+            # Attempt login to sync secondary account
+            try:
+                if mt5 and mt5.login(login=c_login, password=cred["password"], server=cred["server"]):
+                    sync_active_terminal_account(sb)
+                    synced += 1
+                else:
+                    if mt5:
+                        print(f"⚠️ Could not login secondary account #{c_login}: {mt5.last_error()}")
+            except Exception as se:
+                print(f"⚠️ Secondary sync error for #{c_login}: {se}")
+
+        # Switch back to primary terminal account if needed
+        if active_res:
+            active_login = active_res["login_id"]
+            cur_acc = mt5.account_info() if mt5 else None
+            if cur_acc and int(cur_acc.login) != active_login:
+                # Find password if in creds
+                for c in creds:
+                    if int(c["login_id"]) == active_login:
+                        mt5.login(login=active_login, password=c["password"], server=c["server"])
+                        break
+
     finally:
         is_syncing = False
     return synced
 
 # ------------------------------------------------------------------------------
-# Background Sync Task
+# Background Auto-Sync Worker
 # ------------------------------------------------------------------------------
 async def auto_sync_worker():
-    print(f"[Worker] Background MT5 Auto-Sync started (Interval: {SYNC_INTERVAL}s)")
+    print(f"[Worker] Background MT5 Auto-Sync running every {SYNC_INTERVAL}s")
     while True:
         try:
             await asyncio.to_thread(sync_all_accounts_sync)
@@ -312,6 +377,21 @@ async def on_startup():
     print(f"  Supabase Configured: {bool(SUPABASE_URL and 'your-project' not in SUPABASE_URL)}")
     print(f"  Server listening on: http://localhost:{PORT}")
     print("==================================================================")
+
+    # Initial auto-bind and immediate sync
+    if MT5_AVAILABLE and mt5 is not None:
+        if mt5.initialize():
+            acc = mt5.account_info()
+            if acc:
+                print(f"✅ Connected to HFM Account: {acc.login} | Server: {acc.server} | Balance: ${acc.balance:,.2f}")
+                # Perform immediate startup sync
+                sync_active_terminal_account()
+            else:
+                print(f"⚠️ MT5 terminal open, but not logged into an account: {mt5.last_error()}")
+        else:
+            print(f"❌ mt5.initialize() failed: {mt5.last_error()}")
+
+    # Launch background auto-sync loop
     asyncio.create_task(auto_sync_worker())
 
 # ------------------------------------------------------------------------------
@@ -325,30 +405,36 @@ def index():
         "mt5_available": MT5_AVAILABLE,
         "supabase_configured": bool(SUPABASE_URL and "your-project" not in SUPABASE_URL),
         "last_sync": last_sync_time,
+        "active_account": last_active_account,
     }
 
 @app.get("/api/status")
 def get_status():
     creds = load_credentials()
+    active_login = None
+    if MT5_AVAILABLE and mt5:
+        try:
+            info = mt5.account_info()
+            if info:
+                active_login = int(info.login)
+        except Exception:
+            pass
+
     return {
         "status": "online",
-        "mt5_connected": MT5_AVAILABLE,
+        "mt5_connected": bool(MT5_AVAILABLE and active_login is not None),
         "supabase_connected": bool(SUPABASE_URL and "your-project" not in SUPABASE_URL),
-        "accounts_count": len(creds),
-        "last_sync": last_sync_time,
-        "bridge_mode": "native_mt5" if MT5_AVAILABLE else "simulation_bridge",
-        "note": (
-            "Connected directly to MetaTrader 5"
-            if MT5_AVAILABLE
-            else "MetaTrader 5 library not detected in active Python environment. Python 3.10-3.12 recommended for native MT5."
-        ),
+        "active_login": active_login,
+        "accounts_count": max(len(creds), 1 if active_login else 0),
+        "last_sync_time": last_sync_time,
+        "bridge_mode": "local_mt5",
     }
 
 @app.get("/api/accounts")
 def list_accounts():
     """Lists saved accounts (passwords excluded for security)."""
     creds = load_credentials()
-    return [
+    accs = [
         {
             "login_id": c["login_id"],
             "server": c["server"],
@@ -358,51 +444,60 @@ def list_accounts():
         }
         for c in creds
     ]
+    # If active terminal account is not in creds, include it
+    if last_active_account:
+        cur_id = last_active_account["login_id"]
+        if not any(int(c["login_id"]) == cur_id for c in creds):
+            accs.insert(0, {
+                "login_id": cur_id,
+                "server": last_active_account["server"],
+                "account_name": last_active_account["account_name"],
+                "added_at": last_active_account["last_synced_at"],
+                "is_active_terminal": True,
+            })
+    return accs
 
 @app.post("/api/accounts/add")
-def add_account(req: AddAccountRequest, background_tasks: BackgroundTasks):
-    account_name = req.account_name or f"HFM {req.login_id}"
+def add_account(req: AddAccountRequest):
+    login_id = req.login_id or req.login
+    if not login_id:
+        raise HTTPException(status_code=400, detail="Missing login_id in request.")
 
-    # Verify MT5 login if MT5 is available
-    if MT5_AVAILABLE and mt5 is not None:
-        try:
-            mt5.initialize()
-            authorized = mt5.login(login=req.login_id, password=req.password, server=req.server)
-            if not authorized:
-                error = mt5.last_error()
-                print(f"[MT5] Verification warning: login {req.login_id} returned {error}")
-        except Exception as e:
-            print(f"[MT5] Verification error: {e}")
+    login_id = int(login_id)
+    account_name = req.account_name or f"HFM {login_id}"
 
-    # Store credential locally (password kept on computer only)
+    # Verify MT5 login directly
+    if not MT5_AVAILABLE or mt5 is None:
+        raise HTTPException(status_code=500, detail="MetaTrader5 library is not installed or available.")
+
+    if not mt5.initialize():
+        err = mt5.last_error()
+        raise HTTPException(status_code=500, detail=f"Cannot initialize MT5 Terminal: {err}")
+
+    authorized = mt5.login(login=login_id, password=req.password, server=req.server)
+    if not authorized:
+        err = mt5.last_error()
+        print(f"❌ [MT5] Login failed for #{login_id} on '{req.server}': {err}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"MT5 login failed: {err}. Please verify your login, password, and HFM server name ('{req.server}')."
+        )
+
+    # Store credential locally
     store_account_credential(
-        login_id=req.login_id,
+        login_id=login_id,
         password=req.password,
         server=req.server,
         account_name=account_name,
     )
 
-    # Trigger immediate sync in background
-    sb = get_supabase()
-    background_tasks.add_task(
-        sync_single_account,
-        {
-            "login_id": req.login_id,
-            "password": req.password,
-            "server": req.server,
-            "account_name": account_name,
-        },
-        sb,
-    )
+    # Sync this account to Supabase immediately
+    res = sync_active_terminal_account()
 
     return {
         "success": True,
-        "message": f"HFM Account #{req.login_id} ({account_name}) added successfully and sync initiated.",
-        "account": {
-            "login_id": req.login_id,
-            "account_name": account_name,
-            "server": req.server,
-        },
+        "message": f"✅ Connected and synced HFM Account #{login_id} successfully.",
+        "account": res.get("account") if res else None,
     }
 
 @app.post("/api/accounts/sync", response_model=SyncResponse)
@@ -419,15 +514,14 @@ def trigger_sync():
 def delete_account(login_id: int):
     creds = load_credentials()
     filtered = [c for c in creds if int(c["login_id"]) != login_id]
-    if len(filtered) == len(creds):
-        raise HTTPException(status_code=404, detail="Account not found")
     save_credentials(filtered)
 
-    # Also delete from Supabase if connected
     sb = get_supabase()
     if sb:
         try:
             sb.table("tms_accounts").delete().eq("login_id", login_id).execute()
+            sb.table("tms_active_positions").delete().eq("login_id", login_id).execute()
+            sb.table("tms_trade_journal").delete().eq("login_id", login_id).execute()
         except Exception as e:
             print(f"[Supabase] Error deleting account {login_id}: {e}")
 
@@ -435,4 +529,4 @@ def delete_account(login_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("sync_service:app", host="0.0.0.0", port=PORT, reload=True)
+    uvicorn.run("sync_service:app", host="0.0.0.0", port=PORT, reload=False)
