@@ -82,12 +82,14 @@
       "dynamicAtrSlMult": 1.8,
       "dynamicAtrTpMult": 2.8,
       "stochRsiOversold": 20,
+      "useMultiEmaRibbon": true,
       "forwardHorizonBars": 3,
       "newsSpikeFilterAtr": 2.5,
       "stochRsiOverbought": 80,
       "minRejectionWickPct": 20,
-      "minWinProbabilityPct": 65
+      "minWinProbabilityPct": 65,
+      "use3000BarQuantFilter": true
     }
   },
-  "updated_at": "2026-10-25T01:17:05.701+00:00"
+  "updated_at": "2026-10-25T13:11:50.15+00:00"
 }

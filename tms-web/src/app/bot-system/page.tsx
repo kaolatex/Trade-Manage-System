@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useTrading } from '@/context/trading-context';
 import { useLanguage } from '@/context/language-context';
 import { EnvironmentBanner } from '@/components/bot/environment-banner';
-import { DeepParameterStudio } from '@/components/bot/deep-parameter-studio';
+import { SimpleBotSettings } from '@/components/bot/simple-bot-settings';
 import { LiveTerminal } from '@/components/bot/live-terminal';
 import { RecentBotExecutions } from '@/components/bot/recent-bot-executions';
 import { SectionLabel } from '@/components/ui/card';
@@ -55,14 +55,9 @@ export default function BotSystemPage() {
         <EnvironmentBanner />
       </section>
 
-      {/* 2. Pro EA Deep Parameter Studio (Native MQL5 & Cloud Config 5-Tab System) */}
+      {/* 2. Simple Smart Controls Deck with Collapsible Pro Studio */}
       <section className="space-y-2.5">
-        <SectionLabel
-          title="EA Deep Customization Studio"
-          icon={<SlidersHorizontal className="text-cyan-400" />}
-          hint="Deep parameter tuning for Aggressive Scalper, Adaptive Quant, Basket TP, and MT5 .mq5 EA exporter"
-        />
-        <DeepParameterStudio
+        <SimpleBotSettings
           config={localConfig}
           onChange={handleConfigPatch}
           onSave={handleSave}

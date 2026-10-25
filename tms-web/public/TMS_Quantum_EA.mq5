@@ -593,52 +593,79 @@ int EvaluateAggressiveScalperSignal()
    double lowerWickPct = (lowerWick / totalRange) * 100.0;
    double upperWickPct = (upperWick / totalRange) * 100.0;
 
-   // Multi-EMA Ribbon Trend Alignment & Slope (Over 3 bars)
-   double ema21Slope = (ema21[0] - ema21[3]) / _Point;
-   bool bullRibbon = (ema21[1] > ema50[1] && ema50[1] > ema200[1]);
-   bool bearRibbon = (ema21[1] < ema50[1] && ema50[1] < ema200[1]);
+   // Trend determination
+   bool bullTrend = false;
+   bool bearTrend = false;
 
-   if(!InpUseEMARibbon || !dynUseMultiEmaRibbon)
+   if(dynUseMultiEmaRibbon)
    {
-      bullRibbon = true;
-      bearRibbon = true;
+      bullTrend = (ema21[1] > ema50[1] && ema50[1] > ema200[1]);
+      bearTrend = (ema21[1] < ema50[1] && ema50[1] < ema200[1]);
+   }
+   else
+   {
+      // Fast Scalper: EMA 9 & 21 momentum alignment
+      bullTrend = (ema9[1] >= ema21[1]);
+      bearTrend = (ema9[1] <= ema21[1]);
    }
 
-   // 1. BUY Signal: Bullish Ribbon + Pullback into EMA 9/21 Zone + Rejection/Rebound
-   bool buyPullback = bullRibbon && (rates[1].low <= ema9[1] || rates[1].low <= ema21[1] || rates[1].low <= bb_lower[1]);
-   bool buyRebound  = (rates[1].close > rates[1].open || rates[0].close > rates[1].high);
-   bool buyWick     = (lowerWickPct >= InpMinRejectionWickPct || rates[1].low <= bb_lower[1]);
-   bool buyOsc      = (stochRSI <= 40.0 || rates[1].low <= bb_lower[1]);
+   // 1. BUY Signal
+   bool buyTrigger = false;
+   if(bullTrend)
+   {
+      if(dynUseMultiEmaRibbon)
+      {
+         bool pullback = (rates[1].low <= ema9[1] || rates[1].low <= ema21[1] || rates[1].low <= bb_lower[1]);
+         bool rebound  = (rates[1].close > rates[1].open || rates[0].close > rates[1].high);
+         buyTrigger    = (pullback && rebound);
+      }
+      else
+      {
+         // Active scalper: bullish candlestick confirmation
+         buyTrigger = (rates[1].close > rates[1].open || rates[0].close > rates[1].high);
+      }
+   }
 
-   if(buyPullback && buyRebound && buyWick && buyOsc)
+   if(buyTrigger)
    {
       if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(1, atr_val[1]);
          if(winRate >= InpMinWinProbabilityPct)
          {
-            PrintFormat("🎯 [3000-BAR QUANT] %s | Bullish Ribbon Pullback | 3,000-Bar WinRate: %.1f%% -> FIRE BUY!", _Symbol, winRate);
+            PrintFormat("🎯 [3000-BAR QUANT] %s | Bullish Momentum | 3,000-Bar WinRate: %.1f%% -> FIRE BUY!", _Symbol, winRate);
             return 1;
          }
-         return 0; // Probability below threshold
+         return 0; // Filtered by quant probability
       }
       return 1;
    }
 
-   // 2. SELL Signal: Bearish Ribbon + Pullback into EMA 9/21 Zone + Rejection/Rebound
-   bool sellPullback = bearRibbon && (rates[1].high >= ema9[1] || rates[1].high >= ema21[1] || rates[1].high >= bb_upper[1]);
-   bool sellRebound  = (rates[1].close < rates[1].open || rates[0].close < rates[1].low);
-   bool sellWick     = (upperWickPct >= InpMinRejectionWickPct || rates[1].high >= bb_upper[1]);
-   bool sellOsc      = (stochRSI >= 60.0 || rates[1].high >= bb_upper[1]);
+   // 2. SELL Signal
+   bool sellTrigger = false;
+   if(bearTrend)
+   {
+      if(dynUseMultiEmaRibbon)
+      {
+         bool pullback = (rates[1].high >= ema9[1] || rates[1].high >= ema21[1] || rates[1].high >= bb_upper[1]);
+         bool rebound  = (rates[1].close < rates[1].open || rates[0].close < rates[1].low);
+         sellTrigger   = (pullback && rebound);
+      }
+      else
+      {
+         // Active scalper: bearish candlestick confirmation
+         sellTrigger = (rates[1].close < rates[1].open || rates[0].close < rates[1].low);
+      }
+   }
 
-   if(sellPullback && sellRebound && sellWick && sellOsc)
+   if(sellTrigger)
    {
       if(InpUse3000BarQuantFilter && dynUse3000BarQuantFilter)
       {
          double winRate = Evaluate3000BarHistoricalWinRate(-1, atr_val[1]);
          if(winRate >= InpMinWinProbabilityPct)
          {
-            PrintFormat("🎯 [3000-BAR QUANT] %s | Bearish Ribbon Pullback | 3,000-Bar WinRate: %.1f%% -> FIRE SELL!", _Symbol, winRate);
+            PrintFormat("🎯 [3000-BAR QUANT] %s | Bearish Momentum | 3,000-Bar WinRate: %.1f%% -> FIRE SELL!", _Symbol, winRate);
             return -1;
          }
          return 0;
@@ -1166,11 +1193,10 @@ bool IsTradingSessionAllowed()
    TimeToStruct(gmt, dt);
    int hour = dt.hour;
 
-   bool isCrypto = (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "Crypto") >= 0 || StringFind(_Symbol, "ETH") >= 0);
-   if(isCrypto && InpTradeWeekendCrypto)
-   {
-      if(dt.day_of_week == 0 || dt.day_of_week == 6) return true;
-   }
+   double curPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   bool isCrypto = (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "Crypto") >= 0 || 
+                    StringFind(_Symbol, "ETH") >= 0 || StringFind(_Symbol, "SOL") >= 0 || curPrice > 10000.0);
+   if(isCrypto) return true; // Crypto trades 24/7/365 without session limitations
 
    bool inAsian = (hour >= 0 && hour < 8);
    if(inAsian && InpTradeAsianSession) return true;
@@ -1502,7 +1528,24 @@ void UpdateHUD()
    ObjectSetString(0, HUD_PREFIX + "DailyPnL", OBJPROP_TEXT, dailyText);
    ObjectSetInteger(0, HUD_PREFIX + "DailyPnL", OBJPROP_COLOR, (dailyClosedProfit >= 0) ? C'160,165,180' : C'248,113,113');
 
-   ObjectSetString(0, HUD_PREFIX + "Sync", OBJPROP_TEXT, "Status: " + cloudStatus);
+   bool terminalTradingAllowed = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+   bool expertTradingAllowed   = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
+
+   if(!terminalTradingAllowed)
+   {
+      ObjectSetString(0, HUD_PREFIX + "Sync", OBJPROP_TEXT, "⚠️ ALGO TRADING OFF (กดปุ่มบน MT5)");
+      ObjectSetInteger(0, HUD_PREFIX + "Sync", OBJPROP_COLOR, C'248,113,113');
+   }
+   else if(!expertTradingAllowed)
+   {
+      ObjectSetString(0, HUD_PREFIX + "Sync", OBJPROP_TEXT, "⚠️ CHECK [Allow Algo Trading] (F7)");
+      ObjectSetInteger(0, HUD_PREFIX + "Sync", OBJPROP_COLOR, C'248,113,113');
+   }
+   else
+   {
+      ObjectSetString(0, HUD_PREFIX + "Sync", OBJPROP_TEXT, "Status: " + cloudStatus);
+      ObjectSetInteger(0, HUD_PREFIX + "Sync", OBJPROP_COLOR, dynIsRunning ? C'110,231,183' : C'251,191,36');
+   }
 
    ChartRedraw(0);
 }
